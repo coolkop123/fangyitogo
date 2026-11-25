@@ -56,6 +56,12 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 .tools{display:flex;gap:2px;justify-content:flex-end;margin-top:2px}
 .tools button{border:0;background:none;color:var(--mute);min-height:36px;min-width:44px;border-radius:8px;font-size:13px}
 .tools button:active{background:var(--line)}
+.cap{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:10px 14px 10px;margin-top:6px;cursor:pointer}
+.cap .cs{margin:0 56px 0 0;color:var(--mute);font-size:14px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cap .ct{margin:2px 0 0;font-size:22px;font-weight:700;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.cap.a .ct{color:var(--a)}.cap.b .ct{color:var(--b)}
+.cap .capx{position:absolute;top:8px;right:12px;font-size:12px;color:var(--mute)}
+.bigtext .bsrc{text-align:center;color:#5a6390;font-size:18px;margin:0 0 6px;min-height:0}
 .partial{min-height:24px;color:var(--mute);font-style:italic;text-align:center;padding:2px 4px;font-size:15px}
 .dock{padding:8px 0 calc(var(--sb) + 10px)}
 .talk{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
@@ -134,6 +140,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
       </ol>
     </div>
   </main>
+  <div class="cap" id="cap" hidden role="button" aria-label="全屏字幕"><span class="capx">⤢ 全屏</span><p class="cs" id="capS"></p><p class="ct" id="capT"></p></div>
   <div class="partial" id="partial"></div>
 
   <div class="dock">
@@ -153,7 +160,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.2</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.3</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -214,6 +221,11 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
     <label class="f chk">面对面：说完自动播报译文<input type="checkbox" id="auto"></label>
     <label class="f chk">我说的译文同时全屏显示大字（给对方看）<input type="checkbox" id="bigMine"></label>
     <label class="f chk">同传：边听边在耳机里播报<input type="checkbox" id="liveSpeak"></label>
+    <label class="f chk">同传：自动识别双方语言（用 OpenAI）<input type="checkbox" id="autoLang"></label>
+    <div id="sttBox">
+      <label class="f">识别模型<input type="text" id="sttModel" placeholder="gpt-transcribe" autocapitalize="off" spellcheck="false"></label>
+      <p class="hint" id="autoHint">打开后同传不用分谁在说：听到哪种语言，就翻译成另一种。和 ChatGPT 共用 API Key；每句约多等 1–2 秒，按用量计费。播报译文时会暂停收音，避免把译文又识别一遍。</p>
+    </div>
     <label class="f"><span>语速 <b id="rateV"></b></span><input type="range" id="rate" min="0.6" max="1.6" step="0.1"></label>
     <label class="f"><span>同传断句：停顿 <b id="silV"></b> 秒算一句</span><input type="range" id="sil" min="0.6" max="2.5" step="0.1"></label>
     <div class="btnrow"><button type="button" id="testVoice">试听声音</button></div>
@@ -237,6 +249,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 </div>
 
 <div class="bigtext" id="bigtext" hidden>
+  <div class="bsrc" id="bigS"></div>
   <p id="bigP"></p>
   <div class="btnrow"><button type="button" id="flip">翻转</button><button type="button" id="bigSpeak">朗读</button><button type="button" id="bigClose">关闭</button></div>
 </div>
@@ -274,7 +287,8 @@ const S={
   llmBase:store.get("llmBase",""),llmKey:store.get("llmKey",""),llmModel:store.get("llmModel",""),oaKey:store.get("oaKey",""),oaModel:store.get("oaModel","gpt-4o-mini"),
   auto:store.get("auto",true),bigMine:store.get("bigMine",false),liveSpeak:store.get("liveSpeak",true),
   rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto"),flip:store.get("flip",false),
-  voice:store.get("voice","system"),ttsVoice:store.get("ttsVoice","marin"),ttsModel:store.get("ttsModel","gpt-4o-mini-tts")
+  voice:store.get("voice","system"),ttsVoice:store.get("ttsVoice","marin"),ttsModel:store.get("ttsModel","gpt-4o-mini-tts"),
+  autoLang:store.get("autoLang",true),sttModel:store.get("sttModel","gpt-transcribe")
 };
 let items=store.get("items",[]);
 
@@ -291,7 +305,8 @@ function syncLangs(){
   $("langA").value=S.a;$("langB").value=S.b;
   const A=L(S.a).n,B=L(S.b).n;
   $("subA").textContent=A+" → "+B;$("subB").textContent=B+" → "+A;
-  $("subL").textContent="听"+B+"，"+(S.out==="speaker"?"手机外放":"耳机里播")+A;
+  const auto=S.autoLang&&!!S.oaKey,where=S.out==="speaker"?"手机外放":"耳机里播";
+  $("subL").textContent=auto?"自动识别 "+A+" ⇄ "+B+"，"+where+"译文":"听"+B+"，"+where+A;
 }
 function langChange(){stopListen(true);S.a=$("langA").value;S.b=$("langB").value;store.set("a",S.a);store.set("b",S.b);syncLangs()}
 $("langA").onchange=langChange;$("langB").onchange=langChange;
@@ -302,6 +317,7 @@ function setMode(m){
   stopListen(true);S.mode=m;store.set("mode",m);
   $("mTalk").setAttribute("aria-pressed",m==="talk");$("mLive").setAttribute("aria-pressed",m==="live");
   $("talkBox").hidden=m!=="talk";$("liveBox").hidden=m!=="live";
+  $("cap").hidden=true;if(m==="live"&&items.length)updCap(items[items.length-1]);
 }
 $("mTalk").onclick=()=>setMode("talk");$("mLive").onclick=()=>setMode("live");
 
@@ -317,12 +333,21 @@ function render(it){
   mk("大字",()=>showBig(it));
   mk("复制",()=>copy(it.out||it.src));
   el.append(s,o,tl);$("log").append(el);
-  it.el=el;it.o=o;paint(it);
+  it.el=el;it.o=o;paint(it);updCap(it);
   el.scrollIntoView({block:"end",behavior:"smooth"});
 }
 function paint(it){
   it.o.className="out"+(it.err?" err":it.out?"":" wait");
   it.o.textContent=it.err||it.out||"翻译中…";
+  updCap(it);
+}
+/* 同传字幕：始终显示最新一句（原文 + 译文） */
+let bigFollow=false;
+function updCap(it){
+  if(S.mode!=="live"||it!==items[items.length-1])return;
+  const c=$("cap");c.hidden=false;c.className="cap "+it.side;
+  $("capS").textContent=it.src;$("capT").textContent=it.err||it.out||"翻译中…";
+  if(bigFollow&&!$("bigtext").hidden&&bigIt!==it){bigIt=it;paintBig()}
 }
 items.forEach(render);
 
@@ -370,6 +395,7 @@ async function translate(text,side){
   text=text.trim();if(!text)return;
   const f=side==="a"?L(S.a):L(S.b),t=side==="a"?L(S.b):L(S.a);
   const it={side,src:text,out:"",to:t.id};items.push(it);render(it);
+  if(bigFollow&&S.mode==="live"&&!$("bigtext").hidden){bigIt=it;paintBig()}
   const big=S.mode==="talk"&&side==="a"&&S.bigMine;
   if(big)showBig(it);   // 先弹出大字（显示“翻译中…”），译文到了再更新
   try{
@@ -427,7 +453,7 @@ function sysSpeak(it,queue){
   const seq=++speakSeq;
   if(!queue)synth.cancel();
   if(loud()&&active==="live"&&rec)pauseRec();   // 外放时先停收音，防止回声
-  const recording=!!(active&&rec);
+  const recording=!!(active&&(rec||au));
   if(!recording)setSession("playback");
   // 刚停止收音时 iOS 还没把话筒释放，立刻播会走听筒或没声音，稍等一下
   const wait=queue?0:(Date.now()-micOffAt<700?700-(Date.now()-micOffAt):80);
@@ -508,7 +534,7 @@ async function cloudNext(gen){
   const wait=Date.now()-micOffAt<700?700-(Date.now()-micOffAt):0;   // 等话筒释放
   if(wait)await new Promise(r=>setTimeout(r,wait));
   if(gen!==cloudGen)return;
-  if(!(active&&rec))setSession("playback");
+  if(!(active&&(rec||au)))setSession("playback");
   player.onended=player.onerror=()=>{if(gen!==cloudGen)return;mark(false);cloudNext(gen)};
   player.src=url;player.playbackRate=S.rate;player.preservesPitch=true;
   mark(true);
@@ -523,7 +549,7 @@ async function cloudNext(gen){
 function afterSpeak(){
   setTimeout(()=>{
     if(ttsBusy())return;
-    if(active==="live"&&!rec){setSession("auto");spawn()}
+    if(active==="live"&&!rec&&!au){setSession("auto");spawn()}
   },300);
 }
 function pauseRec(){
@@ -549,6 +575,7 @@ function showPartial(t){$("partial").textContent=t||""}
 function toggle(side){
   unlockTTS();
   if(active){stopListen();return}
+  if(side==="live"&&S.autoLang&&S.oaKey){startAuto();return}
   if(!SR){notice("这个浏览器不支持语音识别。iPhone 请用 Safari，安卓请用 Chrome；现在仍可以打字翻译。");return}
   if(synth)synth.cancel();
   active=side;stopping=null;talkBuf="";sess="";restarts=[];setSession("auto");
@@ -609,8 +636,112 @@ function armSeg(){ // 同传：停顿超过阈值就断句
     restartSoon();
   },S.sil*1000);
 }
+/* ---------- 同传：自动识别语言（录音 → OpenAI 转写 → 判断方向） ---------- */
+let au=null,sttChain=Promise.resolve();
+async function startAuto(){
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  if(!Ctx||!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){notice("这个浏览器不支持自动识别语言，请在设置里关掉「自动识别双方语言」。");return}
+  const ctx=new Ctx();                         // 必须在点击里创建
+  if(synth)synth.cancel();
+  active="live";stopping=null;setUI();wake(true);setSession("play-and-record");
+  showPartial("正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）");
+  let stream;
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
+  catch(e){try{ctx.close()}catch(_){}active=null;setUI();wake(false);showPartial("");notice("没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。");return}
+  if(active!=="live"){stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
+  try{await ctx.resume()}catch(e){}
+  const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(4096,1,1);
+  au={ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005};
+  proc.onaudioprocess=e=>onAudio(e.inputBuffer.getChannelData(0));
+  src.connect(proc);proc.connect(ctx.destination);   // iOS 要连到输出才会运行；这里输出的是静音
+}
+function onAudio(d){
+  if(!au)return;
+  const ms=d.length/au.ctx.sampleRate*1000;
+  if(ttsBusy()){if(au.speaking)endSeg(false);au.pre=[];return}   // 播报时不收，防止回声
+  let sum=0;for(let i=0;i<d.length;i++)sum+=d[i]*d[i];
+  const rms=Math.sqrt(sum/d.length),buf=new Float32Array(d);
+  if(!au.speaking){
+    au.floor=au.floor*0.95+Math.min(rms,0.05)*0.05;            // 估计环境噪声
+    au.pre.push(buf);if(au.pre.length>4)au.pre.shift();         // 保留开口前约 0.3 秒
+    if(rms>Math.max(0.012,au.floor*3)){
+      au.voiced+=ms;
+      if(au.voiced>=170){au.speaking=true;au.chunks=au.pre.splice(0);au.silent=0;showPartial("🎙 正在说话…")}
+    }else au.voiced=0;
+  }else{
+    au.chunks.push(buf);
+    if(rms<Math.max(0.01,au.floor*2.2)){au.silent+=ms;if(au.silent>=S.sil*1000)endSeg(true)}
+    else au.silent=0;
+    if(au.chunks.length*ms>15000)endSeg(true);                  // 一句最长 15 秒
+  }
+}
+function endSeg(send){
+  const chunks=au.chunks,rate=au.ctx.sampleRate;
+  au.chunks=[];au.speaking=false;au.voiced=0;au.silent=0;
+  const total=chunks.reduce((n,c)=>n+c.length,0);
+  if(!send||total/rate<0.5){showPartial(active==="live"?"正在听…":"");return}
+  const p=transcribe(encodeWav(chunks,rate));
+  sttChain=sttChain.then(()=>p).then(r=>{if(r)translate(r.text,r.side)}).catch(()=>{});   // 按说话顺序出结果
+}
+function encodeWav(chunks,rate){
+  const total=chunks.reduce((n,c)=>n+c.length,0),all=new Float32Array(total);let o=0;
+  for(const c of chunks){all.set(c,o);o+=c.length}
+  const target=16000,ratio=rate/target,n=Math.floor(total/ratio),v=new DataView(new ArrayBuffer(44+n*2));
+  const w=(p,t)=>{for(let i=0;i<t.length;i++)v.setUint8(p+i,t.charCodeAt(i))};
+  w(0,"RIFF");v.setUint32(4,36+n*2,true);w(8,"WAVE");w(12,"fmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,target,true);v.setUint32(28,target*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,"data");v.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++){
+    const a=Math.floor(i*ratio),b=Math.min(total,Math.floor((i+1)*ratio));let x=0;
+    for(let j=a;j<b;j++)x+=all[j];x=Math.max(-1,Math.min(1,x/Math.max(1,b-a)));
+    v.setInt16(44+i*2,x<0?x*0x8000:x*0x7fff,true);
+  }
+  return new Blob([v.buffer],{type:"audio/wav"});
+}
+const JUNK=/^(谢谢观看|謝謝觀看|谢谢收看|字幕由.*|請不吝點贊.*|请不吝点赞.*|明镜与点点栏目|thank you( so much)? for watching[.!]?|thanks for watching[.!]?|you|bye[.!]?)$/i;
+async function transcribe(wav){
+  const fd=new FormData();fd.append("file",wav,"speech.wav");fd.append("model",S.sttModel||"gpt-transcribe");
+  const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),20000);
+  if(au&&!au.speaking)showPartial("识别中…");
+  try{
+    const r=await fetch("https://api.openai.com/v1/audio/transcriptions",{method:"POST",headers:{"Authorization":"Bearer "+S.oaKey},body:fd,signal:ctl.signal});
+    if(!r.ok){const e=new Error({400:"识别模型名称不对或音频有问题",401:"API Key 不正确",403:"当前地区或账号无权使用",404:"识别模型名称不对",429:"额度不足或请求太频繁"}[r.status]||("HTTP "+r.status));e.fatal=r.status!==429;throw e}
+    const j=await r.json(),text=(j.text||"").trim();
+    if(!text||JUNK.test(text.replace(/[。.!！\s]+$/,"")))return null;
+    const code=(j.languages&&j.languages[0]&&j.languages[0].code)||j.language||"";
+    return {text,side:sideFor(code,text)};
+  }catch(e){
+    const why=e.name==="AbortError"?"网络超时":e.message;
+    if(e.fatal&&au){active=null;stopAuto(false);notice("自动识别语言不可用（"+why+"）。可以在设置里关掉「自动识别双方语言」，改用普通同传。")}
+    else toast("这一句没识别出来（"+why+"）");
+    return null;
+  }finally{clearTimeout(t);if(au)showPartial(au.speaking?"🎙 正在说话…":"正在听…")}
+}
+const NAMES={chinese:"zh",mandarin:"zh",cantonese:"zh",english:"en",japanese:"ja",korean:"ko",french:"fr",german:"de",spanish:"es",italian:"it",portuguese:"pt",russian:"ru",thai:"th",vietnamese:"vi",indonesian:"id",malay:"ms",turkish:"tr",arabic:"ar"};
+function baseOf(c){c=String(c||"").toLowerCase();c=NAMES[c]||c.split(/[-_]/)[0];return c==="yue"?"zh":c}
+function scriptOf(t){
+  if(/[\u3040-\u30ff]/.test(t))return "ja";if(/[\uac00-\ud7af]/.test(t))return "ko";if(/[\u4e00-\u9fff]/.test(t))return "zh";
+  if(/[\u0e00-\u0e7f]/.test(t))return "th";if(/[\u0600-\u06ff]/.test(t))return "ar";if(/[\u0400-\u04ff]/.test(t))return "ru";return "";
+}
+function sideFor(code,text){
+  const a=baseOf(L(S.a).g),b=baseOf(L(S.b).g);
+  let c=baseOf(code);
+  if(c!==a&&c!==b){                       // 没给语言，或给的不是这两种：按文字判断
+    const sc=scriptOf(text);
+    if(sc)c=sc;else c=scriptOf(L(S.a).n)===""&&scriptOf(L(S.b).n)!==""?a:(scriptOf(L(S.b).n)===""&&scriptOf(L(S.a).n)!==""?b:"");
+  }
+  return c===a&&c!==b?"a":"b";
+}
+function stopAuto(flush){
+  const a=au;if(!a)return;
+  if(flush&&a.speaking)endSeg(true);
+  au=null;
+  try{a.proc.onaudioprocess=null;a.proc.disconnect();a.src.disconnect()}catch(e){}
+  a.stream.getTracks().forEach(t=>t.stop());try{a.ctx.close()}catch(e){}
+  micOffAt=Date.now();setSession("playback");showPartial("");setUI();wake(false);
+}
 function stopListen(silent){
   if(!active)return;
+  if(au){active=null;stopAuto(!silent);return}
   stopping=silent?null:active;active=null;setUI();
   if(silent){talkBuf="";sess=""}
   const r=rec;
@@ -634,6 +765,7 @@ document.addEventListener("visibilitychange",()=>{if(document.visibilityState===
 let bigIt=null;
 function paintBig(){
   const it=bigIt;if(!it)return;
+  $("bigS").textContent=bigFollow?it.src:"";
   const p=$("bigP");p.classList.toggle("wait",!it.out);
   p.textContent=it.out||it.err||"翻译中…";
 }
@@ -643,7 +775,8 @@ function showBig(it){
   $("sheet").hidden=true;$("typeIn").blur();
   $("bigtext").hidden=false;
 }
-$("bigClose").onclick=()=>{$("bigtext").hidden=true;bigIt=null};
+$("bigClose").onclick=()=>{$("bigtext").hidden=true;bigIt=null;bigFollow=false};
+$("cap").onclick=()=>{const it=items[items.length-1];if(!it)return;bigFollow=true;showBig(it)};
 $("flip").onclick=()=>{S.flip=!S.flip;store.set("flip",S.flip);$("bigtext").classList.toggle("flip",S.flip)};
 $("bigSpeak").onclick=()=>{unlockTTS();bigIt&&speak(bigIt)};
 
@@ -663,7 +796,7 @@ function syncSettings(){
   $("engine").value=S.engine;$("engineHint").textContent=hints[S.engine];
   $("mmBox").hidden=S.engine!=="mymemory";$("llmBox").hidden=S.engine!=="llm";$("oaBox").hidden=S.engine!=="chatgpt";
   $("mmEmail").value=S.mmEmail;$("llmBase").value=S.llmBase;$("llmKey").value=S.llmKey;$("llmModel").value=S.llmModel;$("oaKey").value=S.oaKey;$("oaModel").value=S.oaModel;
-  $("out").value=S.out;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
+  $("out").value=S.out;$("autoLang").checked=S.autoLang;$("sttModel").value=S.sttModel;$("sttBox").hidden=!S.autoLang;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
   $("rate").value=S.rate;$("rateV").textContent=(+S.rate).toFixed(1)+"×";
   $("sil").value=S.sil;$("silV").textContent=(+S.sil).toFixed(1);
 }
@@ -678,6 +811,8 @@ $("oaTest").onclick=async()=>{
 };
 bindVal("rate","rate",true);bindVal("sil","sil",true);
 bindVal("out","out");
+bindChk("autoLang","autoLang");bindVal("sttModel","sttModel");
+["autoLang","oaKey","oaKey2"].forEach(id=>$(id).addEventListener("change",()=>{$("sttBox").hidden=!S.autoLang;syncLangs()}));
 bindVal("voiceEng","voice");bindVal("ttsVoice","ttsVoice");bindVal("ttsModel","ttsModel");bindVal("oaKey2","oaKey");
 ["voiceEng","ttsVoice","ttsModel","oaKey2","oaKey"].forEach(id=>$(id).addEventListener("change",()=>{cloudFailed=false}));
 function syncOut(){$("spk").setAttribute("aria-pressed",S.out==="speaker");syncLangs()}
