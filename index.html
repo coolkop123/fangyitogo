@@ -97,6 +97,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 .bigtext[hidden]{display:none}
 .bigtext p{flex:1;margin:0;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700;font-size:clamp(28px,9vw,56px);line-height:1.25;word-break:break-word;overflow:auto}
 .bigtext.flip p{transform:rotate(180deg)}
+.bigtext p.wait{color:#9ca8d8;font-size:clamp(22px,6vw,36px)}
 .bigtext .btnrow{justify-content:center}
 .bigtext .btnrow button{background:#eef1ff;border-color:#cfd6f5;color:#0b1433}
 .toast{position:fixed;left:50%;bottom:calc(var(--sb) + 120px);transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:30;width:max-content;max-width:90vw;text-align:center}
@@ -152,7 +153,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置</h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.1</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -209,12 +210,12 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
       <li><b>安卓</b>：用 Chrome 打开。Chrome 的语音识别依赖 Google 服务，在中国大陆可能无法使用。</li>
       <li>点浏览器的「分享 › 添加到主屏幕」，以后就能像 App 一样从桌面打开。</li>
       <li>网页在锁屏后会暂停，所以收听时会尽量保持屏幕常亮。</li>
-      <li>网页无法单独把声音切到手机外放：面对面时可以用「大字」给对方看，或者分一只耳机给对方戴。</li>
+      <li>外放没声音：先检查手机音量、侧面静音键，并确认没有连着蓝牙耳机；第一次使用请先点一下任意「▶ 播放」。</li>
     </ol>
   </div>
 </div>
 
-<div class="bigtext flip" id="bigtext" hidden>
+<div class="bigtext" id="bigtext" hidden>
   <p id="bigP"></p>
   <div class="btnrow"><button type="button" id="flip">翻转</button><button type="button" id="bigSpeak">朗读</button><button type="button" id="bigClose">关闭</button></div>
 </div>
@@ -251,7 +252,7 @@ const S={
   engine:store.get("engine","google"),mmEmail:store.get("mmEmail",""),
   llmBase:store.get("llmBase",""),llmKey:store.get("llmKey",""),llmModel:store.get("llmModel",""),oaKey:store.get("oaKey",""),oaModel:store.get("oaModel","gpt-4o-mini"),
   auto:store.get("auto",true),bigMine:store.get("bigMine",false),liveSpeak:store.get("liveSpeak",true),
-  rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto")
+  rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto"),flip:store.get("flip",false)
 };
 let items=store.get("items",[]);
 
@@ -347,6 +348,8 @@ async function translate(text,side){
   text=text.trim();if(!text)return;
   const f=side==="a"?L(S.a):L(S.b),t=side==="a"?L(S.b):L(S.a);
   const it={side,src:text,out:"",to:t.id};items.push(it);render(it);
+  const big=S.mode==="talk"&&side==="a"&&S.bigMine;
+  if(big)showBig(it);   // 先弹出大字（显示“翻译中…”），译文到了再更新
   try{
     try{it.out=await engines[S.engine](text,f,t)}
     catch(e){
@@ -355,11 +358,11 @@ async function translate(text,side){
       it.out=await engines.mymemory(text,f,t);
     }
     if(!it.out)throw new Error("空结果");
-  }catch(e){it.err="翻译失败："+(e.name==="AbortError"?"网络超时":e.message);paint(it);return}
+  }catch(e){it.err="翻译失败："+(e.name==="AbortError"?"网络超时":e.message);paint(it);if(bigIt===it)paintBig();return}
   paint(it);save();
-  // 自动播报 / 大字
+  if(bigIt===it)paintBig();
+  // 自动播报
   if(S.mode==="talk"){
-    if(side==="a"&&S.bigMine)showBig(it);
     if(S.auto&&!active)speak(it);
   }else if(S.liveSpeak){speak(it,true)}
 }
@@ -369,44 +372,68 @@ $("typeForm").addEventListener("submit",e=>{e.preventDefault();unlockTTS();const
 const synth=window.speechSynthesis;let voices=[];let unlocked=false;let speakingEl=null;
 function loadVoices(){if(synth)voices=synth.getVoices()}
 if(synth){loadVoices();synth.onvoiceschanged=loadVoices}
-function unlockTTS(){ // iOS 必须在点击里先说一次
+const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+function unlockTTS(){ // iOS 必须在用户点击里先说一次，之后才允许自动播报
   if(!synth||unlocked)return;unlocked=true;
-  try{const u=new SpeechSynthesisUtterance(" ");u.volume=0;synth.speak(u)}catch(e){}
+  try{synth.cancel();const u=new SpeechSynthesisUtterance(" ");u.volume=0.01;u.rate=2;synth.speak(u)}catch(e){}
 }
+document.addEventListener("touchend",unlockTTS,{once:true,passive:true});
+document.addEventListener("click",unlockTTS,{once:true});
 function pickVoice(lang){
+  // iOS 的语音列表里有很多网页用不了的（Siri、未下载的增强语音），选中它们会完全没声音，所以 iOS 只设语言、交给系统挑
+  if(IOS)return null;
   const norm=v=>v.lang.replace("_","-").toLowerCase();const want=lang.toLowerCase(),pre=want.split("-")[0];
   let pool=voices.filter(v=>norm(v)===want);if(!pool.length)pool=voices.filter(v=>norm(v).startsWith(pre));
-  return pool.find(v=>/premium|enhanced|natural|neural|siri/i.test(v.name))||pool.find(v=>v.localService)||pool[0]||null;
+  return pool.find(v=>v.default)||pool.find(v=>v.localService)||pool[0]||null;
 }
-/* iOS Safari 16.4+：audioSession.type="playback" 让声音走扬声器而不是听筒 */
+/* iOS Safari 16.4+：不收音时设成 "playback"，声音走扬声器（或已连的耳机），而不是听筒、也不受静音键影响 */
 const AS=navigator.audioSession;
 function setSession(t){try{if(AS&&AS.type!==t)AS.type=t}catch(e){}}
 const loud=()=>S.out==="speaker";
 const ttsBusy=()=>!!synth&&(synth.speaking||synth.pending);
+let speakSeq=0;
 function speak(it,queue){
   if(!synth){toast("此浏览器不支持朗读");return}
   if(!it.out)return;
+  const seq=++speakSeq;
   if(!queue)synth.cancel();
-  if(loud()){
-    setSession("playback");
-    if(active==="live"&&rec)pauseRec();   // 外放时先停收音，防止回声
-  }
-  const u=new SpeechSynthesisUtterance(it.out);
-  const lang=L(it.to).tts;u.lang=lang;const v=pickVoice(lang);if(v)u.voice=v;u.rate=S.rate;u.volume=1;
-  u.onstart=()=>{if(speakingEl)speakingEl.classList.remove("speaking");speakingEl=it.el;it.el&&it.el.classList.add("speaking")};
-  u.onend=u.onerror=()=>{it.el&&it.el.classList.remove("speaking");afterSpeak()};
-  setTimeout(()=>synth.speak(u),queue?0:60);
+  if(loud()&&active==="live"&&rec)pauseRec();   // 外放时先停收音，防止回声
+  const recording=!!(active&&rec);
+  if(!recording)setSession("playback");
+  // 刚停止收音时 iOS 还没把话筒释放，立刻播会走听筒或没声音，稍等一下
+  const wait=queue?0:(Date.now()-micOffAt<700?700-(Date.now()-micOffAt):80);
+  const go=(useVoice)=>{
+    if(seq!==speakSeq&&!queue)return;
+    const u=new SpeechSynthesisUtterance(it.out);
+    const lang=L(it.to).tts;u.lang=lang;const v=useVoice?pickVoice(lang):null;if(v)u.voice=v;u.rate=S.rate;u.volume=1;u.pitch=1;
+    let started=false;
+    u.onstart=()=>{started=true;if(speakingEl)speakingEl.classList.remove("speaking");speakingEl=it.el;it.el&&it.el.classList.add("speaking")};
+    u.onend=()=>{started=true;it.el&&it.el.classList.remove("speaking");afterSpeak()};
+    u.onerror=e=>{it.el&&it.el.classList.remove("speaking");
+      if(!started&&useVoice&&e.error!=="interrupted"&&e.error!=="canceled"){go(false);return}
+      if(e.error==="not-allowed")toast("请先点一下「▶ 播放」，iPhone 需要点一次才允许自动播报");
+      afterSpeak()};
+    if(!recording)setSession("playback");
+    if(synth.paused)synth.resume();
+    synth.speak(u);
+    // 看门狗：1.8 秒还没开始说，就换系统默认声音重试一次
+    setTimeout(()=>{
+      if(started||seq!==speakSeq)return;
+      if(useVoice){synth.cancel();go(false)}
+      else if(!synth.speaking){unlocked=false;toast("没有播出声音：请点「▶ 播放」，并检查音量和静音键")}
+    },1800);
+  };
+  setTimeout(()=>go(true),wait);
 }
 function afterSpeak(){
   setTimeout(()=>{
     if(ttsBusy())return;
     if(active==="live"&&!rec){setSession("auto");spawn()}
-    else if(!active)setSession("auto");
   },300);
 }
 function pauseRec(){
   clearTimeout(segTimer);
-  const r=rec;rec=null;
+  const r=rec;rec=null;micOffAt=Date.now();
   if(sess.trim())translate(sess,"b");
   sess="";showPartial("播报中，稍后继续收听…");
   try{r.abort()}catch(e){}
@@ -414,6 +441,7 @@ function pauseRec(){
 
 /* ---------- 语音识别 ---------- */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let micOffAt=0;
 let rec=null,active=null,stopping=null,talkBuf="",sess="",done=0,segTimer=null,restarts=[];
 function setUI(){
   $("btnA").dataset.on=active==="a";$("btnB").dataset.on=active==="b";$("btnL").dataset.on=active==="live";
@@ -461,13 +489,14 @@ function absorb(mode){
   sess="";
 }
 function ended(r){
-  if(r!==rec)return;rec=null;clearTimeout(segTimer);
+  if(r!==rec)return;rec=null;clearTimeout(segTimer);micOffAt=Date.now();
   absorb(active||stopping);
   if(active){restartSoon();return}
   finishStop();
 }
 function finishStop(){
-  const was=stopping;stopping=null;
+  const was=stopping;stopping=null;micOffAt=Date.now();
+  if(!active)setSession("playback");   // 话筒关了，声音回到扬声器
   if(was&&was!=="live"&&talkBuf.trim())translate(talkBuf,was);
   talkBuf="";showPartial("");setUI();wake(false);
 }
@@ -508,9 +537,19 @@ document.addEventListener("visibilitychange",()=>{if(document.visibilityState===
 
 /* ---------- 大字 ---------- */
 let bigIt=null;
-function showBig(it){bigIt=it;$("bigP").textContent=it.out||it.src;$("bigtext").hidden=false}
-$("bigClose").onclick=()=>{$("bigtext").hidden=true};
-$("flip").onclick=()=>$("bigtext").classList.toggle("flip");
+function paintBig(){
+  const it=bigIt;if(!it)return;
+  const p=$("bigP");p.classList.toggle("wait",!it.out);
+  p.textContent=it.out||it.err||"翻译中…";
+}
+function showBig(it){
+  bigIt=it;paintBig();
+  $("bigtext").classList.toggle("flip",!!S.flip);
+  $("sheet").hidden=true;$("typeIn").blur();
+  $("bigtext").hidden=false;
+}
+$("bigClose").onclick=()=>{$("bigtext").hidden=true;bigIt=null};
+$("flip").onclick=()=>{S.flip=!S.flip;store.set("flip",S.flip);$("bigtext").classList.toggle("flip",S.flip)};
 $("bigSpeak").onclick=()=>{unlockTTS();bigIt&&speak(bigIt)};
 
 /* ---------- 复制 / 分享 ---------- */
