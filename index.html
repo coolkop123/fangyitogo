@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#0b1433">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="随身同传">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>随身同传</title>
+<style>
+:root{--bg:#0b1433;--panel:#141e4a;--line:#26326e;--ink:#eef1ff;--mute:#9ca8d8;--a:#4fc1c6;--b:#f7e463;--rec:#e8452c;
+  --st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px)}
+[hidden]{display:none!important}
+*{box-sizing:border-box;min-width:0;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overscroll-behavior:none}
+body{font:16px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
+button,select,input{font:inherit;color:inherit}
+button{cursor:pointer;touch-action:manipulation}
+:focus-visible{outline:3px solid var(--a);outline-offset:2px}
+.app{height:100dvh;display:flex;flex-direction:column;max-width:720px;margin:0 auto;padding:calc(var(--st) + 10px) 14px 0}
+header{display:flex;align-items:center;gap:10px;padding-bottom:10px}
+h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
+.seg{flex:1;display:flex;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px}
+.seg button{flex:1;border:0;background:none;border-radius:999px;min-height:36px;font-size:14px;font-weight:600;color:var(--mute);padding:0 6px;white-space:nowrap}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--bg)}
+.icon{width:44px;height:44px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--panel);display:grid;place-items:center}
+.icon svg{width:22px;height:22px}
+.spk .w{opacity:.25}.spk[aria-pressed=true]{background:var(--b);color:var(--bg);border-color:var(--b)}.spk[aria-pressed=true] .w{opacity:1}
+.rail{display:grid;grid-template-columns:minmax(0,1fr) 44px minmax(0,1fr);gap:8px;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.lang{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0 4px 0 12px;min-height:48px}
+.lang i{width:10px;height:10px;border-radius:50%;flex:none}
+.lang.a i{background:var(--a)}.lang.b i{background:var(--b)}
+.lang span{font-size:12px;color:var(--mute);flex:none}
+.lang select{flex:1;width:100%;background:transparent;border:0;font-size:16px;font-weight:600;min-height:44px;-webkit-appearance:none;appearance:none;padding:0 4px}
+.lang select option{background:var(--panel);color:var(--ink)}
+.notice{margin:10px 0 0;padding:10px 12px;border-radius:12px;background:#2c1733;border:1px solid #6a2c40;color:#ffd6cf;font-size:14px}
+.notice[hidden]{display:none}
+#log{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 0 6px;display:flex;flex-direction:column;gap:12px}
+.empty{margin:auto;text-align:center;color:var(--mute);padding:20px 10px;max-width:400px}
+.empty img{width:96px;height:96px;border-radius:24px;display:block;margin:0 auto 14px}
+.empty b{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}
+.empty ol{text-align:left;font-size:14px;padding-left:20px;margin:12px 0 0}
+.msg{max-width:86%;border-radius:18px;padding:10px 14px 6px;background:var(--panel);border:1px solid var(--line)}
+.msg.a{align-self:flex-end;border-top-right-radius:6px;box-shadow:inset -4px 0 0 var(--a)}
+.msg.b{align-self:flex-start;border-top-left-radius:6px;box-shadow:inset 4px 0 0 var(--b)}
+.msg .src{color:var(--mute);font-size:14px;margin:0 0 3px}
+.msg .out{font-size:19px;line-height:1.45;margin:0;font-weight:500;white-space:pre-wrap;word-break:break-word}
+.msg .out.wait{color:var(--mute);font-size:15px}
+.msg .out.err{color:#ff9b8a;font-size:15px}
+.msg.speaking.a .out{color:var(--a)}.msg.speaking.b .out{color:var(--b)}
+.tools{display:flex;gap:2px;justify-content:flex-end;margin-top:2px}
+.tools button{border:0;background:none;color:var(--mute);min-height:36px;min-width:44px;border-radius:8px;font-size:13px}
+.tools button:active{background:var(--line)}
+.partial{min-height:24px;color:var(--mute);font-style:italic;text-align:center;padding:2px 4px;font-size:15px}
+.dock{padding:8px 0 calc(var(--sb) + 10px)}
+.talk{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.big{min-height:84px;border-radius:22px;border:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-weight:800;font-size:18px;color:#0b1433;transition:transform .1s;user-select:none;-webkit-user-select:none}
+.big:active{transform:scale(.97)}
+.big small{font-weight:500;font-size:12px;opacity:.8}
+.big.a{background:var(--a)}.big.b{background:var(--b)}.big.live{background:var(--ink);width:100%}
+.big[data-on=true]{background:var(--rec);color:#fff}
+.big:disabled{opacity:.4}
+.wave{display:flex;gap:3px;height:20px;align-items:center}
+.wave i{width:4px;height:7px;border-radius:2px;background:currentColor}
+.big[data-on=true] .wave i{animation:w .9s ease-in-out infinite}
+.wave i:nth-child(2){animation-delay:.15s!important}.wave i:nth-child(3){animation-delay:.3s!important}.wave i:nth-child(4){animation-delay:.45s!important}
+@keyframes w{0%,100%{height:5px}50%{height:20px}}
+@media (prefers-reduced-motion:reduce){.big[data-on=true] .wave i{animation:none;height:14px}}
+.type{display:flex;gap:8px;margin-top:10px}
+.type input{flex:1;min-height:46px;border-radius:14px;border:1px solid var(--line);background:var(--panel);padding:0 14px;font-size:16px}
+.type button{min-height:46px;border-radius:14px;border:1px solid var(--line);background:var(--panel);padding:0 16px;font-weight:600}
+/* 设置面板 */
+.sheet{position:fixed;inset:0;background:rgba(3,6,20,.6);display:flex;align-items:flex-end;justify-content:center;z-index:10}
+.sheet[hidden]{display:none}
+.card{background:var(--bg);border:1px solid var(--line);border-bottom:0;border-radius:22px 22px 0 0;width:100%;max-width:720px;max-height:88dvh;overflow-y:auto;padding:16px 18px calc(var(--sb) + 20px)}
+.card h2{font-size:18px;margin:0;flex:1}
+.card h3{font-size:14px;color:var(--mute);font-weight:600;margin:20px 0 8px}
+.head{display:flex;align-items:center;gap:10px;position:sticky;top:-16px;background:var(--bg);padding:4px 0 8px;margin-top:-4px}
+.f{display:flex;flex-direction:column;gap:6px;margin:10px 0;font-size:14px;color:var(--mute)}
+.f select,.f input[type=text],.f input[type=password],.f input[type=email]{min-height:46px;border-radius:12px;border:1px solid var(--line);background:var(--panel);padding:0 12px;font-size:16px;color:var(--ink)}
+.f input[type=range]{width:100%;accent-color:var(--a)}
+.chk{flex-direction:row;align-items:center;justify-content:space-between;color:var(--ink);font-size:16px;min-height:44px}
+.chk input{width:24px;height:24px;accent-color:var(--a);flex:none}
+.hint{font-size:13px;color:var(--mute);margin:4px 0 0}
+.btnrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.btnrow button{min-height:44px;border-radius:12px;border:1px solid var(--line);background:var(--panel);padding:0 14px;font-weight:600}
+.done{min-height:40px;border-radius:999px;border:0;background:var(--ink);color:var(--bg);padding:0 18px;font-weight:700}
+.tips{font-size:14px;color:var(--mute);padding-left:20px;margin:0}
+.tips li{margin:5px 0}
+/* 大字 */
+.bigtext{position:fixed;inset:0;background:#fff;color:#0b1433;z-index:20;display:flex;flex-direction:column;padding:calc(var(--st) + 16px) 20px calc(var(--sb) + 16px)}
+.bigtext[hidden]{display:none}
+.bigtext p{flex:1;margin:0;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700;font-size:clamp(28px,9vw,56px);line-height:1.25;word-break:break-word;overflow:auto}
+.bigtext.flip p{transform:rotate(180deg)}
+.bigtext .btnrow{justify-content:center}
+.bigtext .btnrow button{background:#eef1ff;border-color:#cfd6f5;color:#0b1433}
+.toast{position:fixed;left:50%;bottom:calc(var(--sb) + 120px);transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;z-index:30;width:max-content;max-width:90vw;text-align:center}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>随身同传</h1>
+    <div class="seg" role="group" aria-label="模式">
+      <button id="mTalk" aria-pressed="true">面对面</button>
+      <button id="mLive" aria-pressed="false">同传收听</button>
+    </div>
+    <button class="icon spk" id="spk" aria-pressed="false" aria-label="手机外放"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path class="w" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
+    <button class="icon" id="openSet" aria-label="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </header>
+
+  <div class="rail">
+    <label class="lang a"><i></i><span>我</span><select id="langA" aria-label="我的语言"></select></label>
+    <button class="icon" id="swap" aria-label="交换语言">⇄</button>
+    <label class="lang b"><i></i><span>对方</span><select id="langB" aria-label="对方语言"></select></label>
+  </div>
+  <p class="notice" id="notice" hidden></p>
+
+  <main id="log" aria-live="polite">
+    <div class="empty" id="empty">
+      <img src="icon-192.png" alt="">
+      <b>连好蓝牙耳机，按下方按钮说话</b>
+      <ol>
+        <li>在手机的蓝牙设置里连接耳机（任何品牌都行）</li>
+        <li>面对面：轮到谁说就按谁的按钮，说完再按一次</li>
+        <li>同传收听：持续听对方说话，译文在耳机里逐句播报</li>
+      </ol>
+    </div>
+  </main>
+  <div class="partial" id="partial"></div>
+
+  <div class="dock">
+    <div class="talk" id="talkBox">
+      <button class="big a" id="btnA"><span class="wave"><i></i><i></i><i></i><i></i></span><span id="labA">我说</span><small id="subA"></small></button>
+      <button class="big b" id="btnB"><span class="wave"><i></i><i></i><i></i><i></i></span><span id="labB">对方说</span><small id="subB"></small></button>
+    </div>
+    <div id="liveBox" hidden>
+      <button class="big live" id="btnL"><span class="wave"><i></i><i></i><i></i><i></i></span><span id="labL">开始同传</span><small id="subL"></small></button>
+    </div>
+    <form class="type" id="typeForm">
+      <input id="typeIn" placeholder="也可以打字翻译…" autocomplete="off" enterkeyhint="send" aria-label="输入要翻译的文字">
+      <button type="submit">翻译</button>
+    </form>
+  </div>
+</div>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="card" role="dialog" aria-label="设置">
+    <div class="head"><h2>设置</h2><button class="done" id="closeSet">完成</button></div>
+
+    <h3>翻译引擎</h3>
+    <label class="f">引擎
+      <select id="engine">
+        <option value="google">Google 翻译（免费，速度快）</option>
+        <option value="mymemory">MyMemory（免费，中国大陆可用）</option>
+        <option value="chatgpt">ChatGPT（OpenAI，质量最好）</option>
+        <option value="llm">大模型 API（DeepSeek / 通义 / OpenAI 等）</option>
+      </select>
+    </label>
+    <p class="hint" id="engineHint"></p>
+    <div id="mmBox">
+      <label class="f">邮箱（可选，填写后免费额度从每天 5000 字提高到 50000 字）<input type="email" id="mmEmail" placeholder="you@example.com" autocomplete="email"></label>
+    </div>
+    <div id="oaBox">
+      <label class="f">OpenAI API Key（只保存在这台手机上）<input type="password" id="oaKey" placeholder="sk-…" autocomplete="off"></label>
+      <label class="f">模型<input type="text" id="oaModel" list="oaModels" placeholder="gpt-4o-mini" autocapitalize="off" spellcheck="false"></label>
+      <datalist id="oaModels"><option value="gpt-4o-mini"><option value="gpt-4.1-mini"><option value="gpt-4o"></datalist>
+      <div class="btnrow"><button type="button" id="oaTest">测试连接</button></div>
+      <p class="hint" id="oaResult">在 platform.openai.com › API keys 新建密钥。API 按用量单独计费，不包含在 ChatGPT 会员里；中国大陆和香港无法使用。</p>
+    </div>
+    <div id="llmBox">
+      <label class="f">接口地址（OpenAI 兼容）<input type="text" id="llmBase" placeholder="https://api.deepseek.com/v1" autocapitalize="off" spellcheck="false"></label>
+      <label class="f">API Key（只保存在这台手机上）<input type="password" id="llmKey" placeholder="sk-…" autocomplete="off"></label>
+      <label class="f">模型<input type="text" id="llmModel" placeholder="deepseek-chat" autocapitalize="off" spellcheck="false"></label>
+      <p class="hint">需要该服务允许浏览器直接调用。翻译失败时会自动改用免费引擎。</p>
+    </div>
+
+    <h3>播报</h3>
+    <label class="f">声音从哪里播放
+      <select id="out">
+        <option value="auto">跟随系统（连着耳机就用耳机）</option>
+        <option value="speaker">手机外放（大声，给周围的人听）</option>
+      </select>
+    </label>
+    <p class="hint">iPhone 连着蓝牙耳机时，网页的声音一定从耳机出来；要外放请先断开耳机，或用 iOS 原生版。外放时，同传会在播报期间暂停收音，避免把自己的声音录进去。也可以点顶部的喇叭按钮快速切换。</p>
+    <label class="f chk">面对面：说完自动播报译文<input type="checkbox" id="auto"></label>
+    <label class="f chk">我说的译文同时全屏显示大字（给对方看）<input type="checkbox" id="bigMine"></label>
+    <label class="f chk">同传：边听边在耳机里播报<input type="checkbox" id="liveSpeak"></label>
+    <label class="f"><span>语速 <b id="rateV"></b></span><input type="range" id="rate" min="0.6" max="1.6" step="0.1"></label>
+    <label class="f"><span>同传断句：停顿 <b id="silV"></b> 秒算一句</span><input type="range" id="sil" min="0.6" max="2.5" step="0.1"></label>
+    <div class="btnrow"><button type="button" id="testVoice">试听声音</button></div>
+
+    <h3>记录</h3>
+    <div class="btnrow">
+      <button type="button" id="shareAll">分享全部</button>
+      <button type="button" id="copyAll">复制全部</button>
+      <button type="button" id="clear">清空记录</button>
+    </div>
+
+    <h3>使用提示</h3>
+    <ol class="tips">
+      <li><b>iPhone</b>：用 Safari 打开；需要在 设置 › 通用 › 键盘 中打开「启用听写」。</li>
+      <li><b>安卓</b>：用 Chrome 打开。Chrome 的语音识别依赖 Google 服务，在中国大陆可能无法使用。</li>
+      <li>点浏览器的「分享 › 添加到主屏幕」，以后就能像 App 一样从桌面打开。</li>
+      <li>网页在锁屏后会暂停，所以收听时会尽量保持屏幕常亮。</li>
+      <li>网页无法单独把声音切到手机外放：面对面时可以用「大字」给对方看，或者分一只耳机给对方戴。</li>
+    </ol>
+  </div>
+</div>
+
+<div class="bigtext flip" id="bigtext" hidden>
+  <p id="bigP"></p>
+  <div class="btnrow"><button type="button" id="flip">翻转</button><button type="button" id="bigSpeak">朗读</button><button type="button" id="bigClose">关闭</button></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+{
+const LANGS=[
+  {id:"zh-CN",n:"中文",e:"Simplified Chinese",sr:"zh-CN",g:"zh-CN",mm:"zh-CN",tts:"zh-CN"},
+  {id:"zh-TW",n:"繁體中文",e:"Traditional Chinese",sr:"zh-TW",g:"zh-TW",mm:"zh-TW",tts:"zh-TW"},
+  {id:"yue",n:"粵語",e:"Cantonese (written in Traditional Chinese)",sr:"zh-HK",g:"yue",mm:"zh-HK",tts:"zh-HK"},
+  {id:"en-US",n:"English",e:"English",sr:"en-US",g:"en",mm:"en-US",tts:"en-US"},
+  {id:"ja",n:"日本語",e:"Japanese",sr:"ja-JP",g:"ja",mm:"ja-JP",tts:"ja-JP"},
+  {id:"ko",n:"한국어",e:"Korean",sr:"ko-KR",g:"ko",mm:"ko-KR",tts:"ko-KR"},
+  {id:"fr",n:"Français",e:"French",sr:"fr-FR",g:"fr",mm:"fr-FR",tts:"fr-FR"},
+  {id:"de",n:"Deutsch",e:"German",sr:"de-DE",g:"de",mm:"de-DE",tts:"de-DE"},
+  {id:"es",n:"Español",e:"Spanish",sr:"es-ES",g:"es",mm:"es-ES",tts:"es-ES"},
+  {id:"it",n:"Italiano",e:"Italian",sr:"it-IT",g:"it",mm:"it-IT",tts:"it-IT"},
+  {id:"pt",n:"Português",e:"Portuguese (Brazil)",sr:"pt-BR",g:"pt",mm:"pt-BR",tts:"pt-BR"},
+  {id:"ru",n:"Русский",e:"Russian",sr:"ru-RU",g:"ru",mm:"ru-RU",tts:"ru-RU"},
+  {id:"th",n:"ไทย",e:"Thai",sr:"th-TH",g:"th",mm:"th-TH",tts:"th-TH"},
+  {id:"vi",n:"Tiếng Việt",e:"Vietnamese",sr:"vi-VN",g:"vi",mm:"vi-VN",tts:"vi-VN"},
+  {id:"id",n:"Indonesia",e:"Indonesian",sr:"id-ID",g:"id",mm:"id-ID",tts:"id-ID"},
+  {id:"ms",n:"Melayu",e:"Malay",sr:"ms-MY",g:"ms",mm:"ms-MY",tts:"ms-MY"},
+  {id:"tr",n:"Türkçe",e:"Turkish",sr:"tr-TR",g:"tr",mm:"tr-TR",tts:"tr-TR"},
+  {id:"ar",n:"العربية",e:"Arabic",sr:"ar-SA",g:"ar",mm:"ar-SA",tts:"ar-SA"}
+];
+const $=id=>document.getElementById(id);
+const L=id=>LANGS.find(l=>l.id===id)||LANGS[0];
+const store={get(k,d){try{const v=localStorage.getItem("ts_"+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem("ts_"+k,JSON.stringify(v))}catch(e){}}};
+
+const S={
+  a:store.get("a","zh-CN"),b:store.get("b","en-US"),mode:store.get("mode","talk"),
+  engine:store.get("engine","google"),mmEmail:store.get("mmEmail",""),
+  llmBase:store.get("llmBase",""),llmKey:store.get("llmKey",""),llmModel:store.get("llmModel",""),oaKey:store.get("oaKey",""),oaModel:store.get("oaModel","gpt-4o-mini"),
+  auto:store.get("auto",true),bigMine:store.get("bigMine",false),liveSpeak:store.get("liveSpeak",true),
+  rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto")
+};
+let items=store.get("items",[]);
+
+/* ---------- 通用 ---------- */
+function toast(t){const e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("show"),1800)}
+function notice(t){const n=$("notice");if(t){n.textContent=t;n.hidden=false}else n.hidden=true}
+const join=(a,b)=>!a?b:!b?a:a+(/[　-鿿＀-￯]$/.test(a)?"":" ")+b;
+function save(){store.set("items",items.slice(-200).map(({side,src,out,to})=>({side,src,out,to})))}
+
+/* ---------- 语言选择 ---------- */
+const opts=LANGS.map(l=>`<option value="${l.id}">${l.n}</option>`).join("");
+$("langA").innerHTML=opts;$("langB").innerHTML=opts;
+function syncLangs(){
+  $("langA").value=S.a;$("langB").value=S.b;
+  const A=L(S.a).n,B=L(S.b).n;
+  $("subA").textContent=A+" → "+B;$("subB").textContent=B+" → "+A;
+  $("subL").textContent="听"+B+"，"+(S.out==="speaker"?"手机外放":"耳机里播")+A;
+}
+function langChange(){stopListen(true);S.a=$("langA").value;S.b=$("langB").value;store.set("a",S.a);store.set("b",S.b);syncLangs()}
+$("langA").onchange=langChange;$("langB").onchange=langChange;
+$("swap").onclick=()=>{const t=$("langA").value;$("langA").value=$("langB").value;$("langB").value=t;langChange()};
+
+/* ---------- 模式 ---------- */
+function setMode(m){
+  stopListen(true);S.mode=m;store.set("mode",m);
+  $("mTalk").setAttribute("aria-pressed",m==="talk");$("mLive").setAttribute("aria-pressed",m==="live");
+  $("talkBox").hidden=m!=="talk";$("liveBox").hidden=m!=="live";
+}
+$("mTalk").onclick=()=>setMode("talk");$("mLive").onclick=()=>setMode("live");
+
+/* ---------- 记录渲染 ---------- */
+function render(it){
+  $("empty").hidden=true;
+  const el=document.createElement("article");el.className="msg "+it.side;
+  const s=document.createElement("p");s.className="src";s.textContent=it.src;
+  const o=document.createElement("p");o.className="out";
+  const tl=document.createElement("div");tl.className="tools";
+  const mk=(t,f)=>{const b=document.createElement("button");b.type="button";b.textContent=t;b.onclick=f;tl.append(b);return b};
+  mk("▶ 播放",()=>{unlockTTS();speak(it)});
+  mk("大字",()=>showBig(it));
+  mk("复制",()=>copy(it.out||it.src));
+  el.append(s,o,tl);$("log").append(el);
+  it.el=el;it.o=o;paint(it);
+  el.scrollIntoView({block:"end",behavior:"smooth"});
+}
+function paint(it){
+  it.o.className="out"+(it.err?" err":it.out?"":" wait");
+  it.o.textContent=it.err||it.out||"翻译中…";
+}
+items.forEach(render);
+
+/* ---------- 翻译 ---------- */
+async function getJSON(url,init){
+  const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),12000);
+  try{const r=await fetch(url,{...init,signal:ctl.signal});if(!r.ok){const e=new Error("HTTP "+r.status);e.status=r.status;throw e}return await r.json()}
+  finally{clearTimeout(t)}
+}
+const engines={
+  async google(text,f,t){
+    const j=await getJSON(`https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=${f.g}&tl=${t.g}&q=${encodeURIComponent(text)}`);
+    return j[0].map(x=>x[0]).join("");
+  },
+  async mymemory(text,f,t){
+    const em=S.mmEmail?"&de="+encodeURIComponent(S.mmEmail):"";
+    const j=await getJSON(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0,480))}&langpair=${f.mm}|${t.mm}${em}`);
+    if(+j.responseStatus!==200)throw new Error(j.responseDetails||"MyMemory 出错");
+    return j.responseData.translatedText;
+  },
+  async chatgpt(text,f,t){
+    if(!S.oaKey)throw new Error("请先在设置里填写 OpenAI API Key");
+    try{return await chat("https://api.openai.com/v1",S.oaKey,S.oaModel||"gpt-4o-mini",text,f,t,false)}
+    catch(e){
+      const m={401:"API Key 不正确",403:"当前地区或账号无权使用",404:"模型名称不对",429:"额度不足或请求太频繁"}[e.status];
+      throw m?new Error(m):e;
+    }
+  },
+  async llm(text,f,t){
+    if(!S.llmBase||!S.llmKey||!S.llmModel)throw new Error("请先在设置里填写大模型接口");
+    return chat(S.llmBase,S.llmKey,S.llmModel,text,f,t,true);
+  }
+};
+async function chat(base,key,model,text,f,t,temp){
+  const body={model,messages:[
+    {role:"system",content:`You are a professional real-time interpreter. Translate the user's message from ${f.e} into ${t.e}. The text comes from speech recognition: silently fix obvious recognition errors, keep the tone, use natural spoken phrasing, keep names and numbers exact. Output only the translation, with no quotes, notes or explanations.`},
+    {role:"user",content:text}]};
+  if(temp)body.temperature=0.2;   // 部分 OpenAI 新模型不接受 temperature，ChatGPT 引擎不传
+  const j=await getJSON(base.replace(/\/+$/,"")+"/chat/completions",{method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":"Bearer "+key},body:JSON.stringify(body)});
+  return (j.choices?.[0]?.message?.content||"").trim();
+}
+let fellBack=false;
+async function translate(text,side){
+  text=text.trim();if(!text)return;
+  const f=side==="a"?L(S.a):L(S.b),t=side==="a"?L(S.b):L(S.a);
+  const it={side,src:text,out:"",to:t.id};items.push(it);render(it);
+  try{
+    try{it.out=await engines[S.engine](text,f,t)}
+    catch(e){
+      if(S.engine==="mymemory")throw e;
+      if(!fellBack){fellBack=true;toast((S.engine==="chatgpt"?"ChatGPT":"当前引擎")+"不可用（"+(e.name==="AbortError"?"网络超时":e.message)+"），已改用 MyMemory")}
+      it.out=await engines.mymemory(text,f,t);
+    }
+    if(!it.out)throw new Error("空结果");
+  }catch(e){it.err="翻译失败："+(e.name==="AbortError"?"网络超时":e.message);paint(it);return}
+  paint(it);save();
+  // 自动播报 / 大字
+  if(S.mode==="talk"){
+    if(side==="a"&&S.bigMine)showBig(it);
+    if(S.auto&&!active)speak(it);
+  }else if(S.liveSpeak){speak(it,true)}
+}
+$("typeForm").addEventListener("submit",e=>{e.preventDefault();unlockTTS();const v=$("typeIn").value;$("typeIn").value="";$("typeIn").blur();translate(v,"a")});
+
+/* ---------- 朗读 ---------- */
+const synth=window.speechSynthesis;let voices=[];let unlocked=false;let speakingEl=null;
+function loadVoices(){if(synth)voices=synth.getVoices()}
+if(synth){loadVoices();synth.onvoiceschanged=loadVoices}
+function unlockTTS(){ // iOS 必须在点击里先说一次
+  if(!synth||unlocked)return;unlocked=true;
+  try{const u=new SpeechSynthesisUtterance(" ");u.volume=0;synth.speak(u)}catch(e){}
+}
+function pickVoice(lang){
+  const norm=v=>v.lang.replace("_","-").toLowerCase();const want=lang.toLowerCase(),pre=want.split("-")[0];
+  let pool=voices.filter(v=>norm(v)===want);if(!pool.length)pool=voices.filter(v=>norm(v).startsWith(pre));
+  return pool.find(v=>/premium|enhanced|natural|neural|siri/i.test(v.name))||pool.find(v=>v.localService)||pool[0]||null;
+}
+/* iOS Safari 16.4+：audioSession.type="playback" 让声音走扬声器而不是听筒 */
+const AS=navigator.audioSession;
+function setSession(t){try{if(AS&&AS.type!==t)AS.type=t}catch(e){}}
+const loud=()=>S.out==="speaker";
+const ttsBusy=()=>!!synth&&(synth.speaking||synth.pending);
+function speak(it,queue){
+  if(!synth){toast("此浏览器不支持朗读");return}
+  if(!it.out)return;
+  if(!queue)synth.cancel();
+  if(loud()){
+    setSession("playback");
+    if(active==="live"&&rec)pauseRec();   // 外放时先停收音，防止回声
+  }
+  const u=new SpeechSynthesisUtterance(it.out);
+  const lang=L(it.to).tts;u.lang=lang;const v=pickVoice(lang);if(v)u.voice=v;u.rate=S.rate;u.volume=1;
+  u.onstart=()=>{if(speakingEl)speakingEl.classList.remove("speaking");speakingEl=it.el;it.el&&it.el.classList.add("speaking")};
+  u.onend=u.onerror=()=>{it.el&&it.el.classList.remove("speaking");afterSpeak()};
+  setTimeout(()=>synth.speak(u),queue?0:60);
+}
+function afterSpeak(){
+  setTimeout(()=>{
+    if(ttsBusy())return;
+    if(active==="live"&&!rec){setSession("auto");spawn()}
+    else if(!active)setSession("auto");
+  },300);
+}
+function pauseRec(){
+  clearTimeout(segTimer);
+  const r=rec;rec=null;
+  if(sess.trim())translate(sess,"b");
+  sess="";showPartial("播报中，稍后继续收听…");
+  try{r.abort()}catch(e){}
+}
+
+/* ---------- 语音识别 ---------- */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null,active=null,stopping=null,talkBuf="",sess="",done=0,segTimer=null,restarts=[];
+function setUI(){
+  $("btnA").dataset.on=active==="a";$("btnB").dataset.on=active==="b";$("btnL").dataset.on=active==="live";
+  $("labA").textContent=active==="a"?"说完了":"我说";
+  $("labB").textContent=active==="b"?"说完了":"对方说";
+  $("labL").textContent=active==="live"?"停止同传":"开始同传";
+  $("btnA").disabled=active==="b";$("btnB").disabled=active==="a";
+}
+function showPartial(t){$("partial").textContent=t||""}
+function toggle(side){
+  unlockTTS();
+  if(active){stopListen();return}
+  if(!SR){notice("这个浏览器不支持语音识别。iPhone 请用 Safari，安卓请用 Chrome；现在仍可以打字翻译。");return}
+  if(synth)synth.cancel();
+  active=side;stopping=null;talkBuf="";sess="";restarts=[];setSession("auto");
+  setUI();wake(true);spawn();
+}
+function spawn(){
+  const r=new SR();rec=r;done=0;sess="";
+  r.lang=(active==="a"?L(S.a):L(S.b)).sr;
+  r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
+  r.onresult=e=>{
+    if(r!==rec)return;
+    let fin="",int="";
+    for(let i=done;i<e.results.length;i++){
+      const res=e.results[i],t=res[0].transcript;
+      if(res.isFinal){
+        if(active==="live"){translate(t,"b");done=i+1}else fin+=t;
+      }else int+=t;
+    }
+    if(active==="live"){sess=int;showPartial(int);armSeg()}
+    else{sess=fin+int;showPartial(join(talkBuf,sess))}
+  };
+  r.onerror=e=>{
+    if(r!==rec)return;
+    const m={"not-allowed":"麦克风或语音识别未获允许。iPhone 请在 设置 › 通用 › 键盘 中打开「启用听写」，并允许网站使用麦克风。","service-not-allowed":"语音识别服务不可用。iPhone 请打开「启用听写」；安卓 Chrome 需要能连上 Google 服务。","network":"语音识别需要联网（安卓 Chrome 需要能连上 Google 服务）。","language-not-supported":"这个浏览器不支持该语言的语音识别。","audio-capture":"找不到麦克风，请检查耳机连接。"}[e.error];
+    if(m){notice(m);active=null;setUI()}
+  };
+  r.onend=()=>ended(r);
+  try{r.start()}catch(e){rec=null;active=null;setUI();toast("话筒没有启动，请再点一次")}
+}
+function absorb(mode){
+  if(mode==="live"){if(sess.trim())translate(sess,"b")}
+  else if(mode){talkBuf=join(talkBuf,sess.trim())}
+  sess="";
+}
+function ended(r){
+  if(r!==rec)return;rec=null;clearTimeout(segTimer);
+  absorb(active||stopping);
+  if(active){restartSoon();return}
+  finishStop();
+}
+function finishStop(){
+  const was=stopping;stopping=null;
+  if(was&&was!=="live"&&talkBuf.trim())translate(talkBuf,was);
+  talkBuf="";showPartial("");setUI();wake(false);
+}
+function restartSoon(){
+  const now=Date.now();restarts=restarts.filter(t=>now-t<10000);restarts.push(now);
+  if(restarts.length>12){notice("语音识别反复中断，已停止。请检查网络或麦克风后再试。");active=null;finishStop();return}
+  setTimeout(()=>{if(active&&!rec&&!(loud()&&ttsBusy()))spawn()},150);
+}
+function armSeg(){ // 同传：停顿超过阈值就断句
+  clearTimeout(segTimer);
+  segTimer=setTimeout(()=>{
+    if(active!=="live"||!rec||!sess.trim())return;
+    const r=rec;rec=null;translate(sess,"b");sess="";showPartial("");
+    try{r.abort()}catch(e){}
+    restartSoon();
+  },S.sil*1000);
+}
+function stopListen(silent){
+  if(!active)return;
+  stopping=silent?null:active;active=null;setUI();
+  if(silent){talkBuf="";sess=""}
+  const r=rec;
+  if(!r){if(!silent)absorb(stopping);finishStop();return}
+  try{silent?r.abort():r.stop()}catch(e){}
+  setTimeout(()=>{if(rec===r){try{r.abort()}catch(e){}ended(r)}},1800); // 有些浏览器不触发 onend
+}
+$("btnA").onclick=()=>toggle("a");$("btnB").onclick=()=>toggle("b");$("btnL").onclick=()=>toggle("live");
+
+/* ---------- 屏幕常亮 ---------- */
+let wl=null;
+async function wake(on){
+  try{
+    if(on&&"wakeLock" in navigator&&!wl){wl=await navigator.wakeLock.request("screen");wl.addEventListener("release",()=>{wl=null})}
+    else if(!on&&wl){await wl.release();wl=null}
+  }catch(e){}
+}
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&active)wake(true)});
+
+/* ---------- 大字 ---------- */
+let bigIt=null;
+function showBig(it){bigIt=it;$("bigP").textContent=it.out||it.src;$("bigtext").hidden=false}
+$("bigClose").onclick=()=>{$("bigtext").hidden=true};
+$("flip").onclick=()=>$("bigtext").classList.toggle("flip");
+$("bigSpeak").onclick=()=>{unlockTTS();bigIt&&speak(bigIt)};
+
+/* ---------- 复制 / 分享 ---------- */
+function copy(t){
+  if(navigator.clipboard)navigator.clipboard.writeText(t).then(()=>toast("已复制"),()=>toast("无法复制"));
+  else toast("无法复制");
+}
+const transcript=()=>items.map(i=>(i.side==="a"?"我：":"对方：")+i.src+"\n→ "+(i.out||"")).join("\n\n");
+$("copyAll").onclick=()=>copy(transcript());
+$("shareAll").onclick=()=>{const t=transcript();if(navigator.share)navigator.share({title:"随身同传记录",text:t}).catch(()=>{});else copy(t)};
+$("clear").onclick=()=>{items.forEach(i=>i.el&&i.el.remove());items=[];save();$("empty").hidden=false;toast("已清空")};
+
+/* ---------- 设置 ---------- */
+const hints={google:"免费、速度快、质量好；在中国大陆通常无法连接，失败时会自动改用 MyMemory。",mymemory:"免费、中国大陆可用；质量一般，单句最长约 480 字。",chatgpt:"翻译最自然，能纠正语音识别听错的字。需要 OpenAI API Key，按用量付费；失败时自动改用 MyMemory。",llm:"可接 DeepSeek、通义千问等任何兼容 OpenAI 格式的服务。需要你自己的 API Key，按用量付费。"};
+function syncSettings(){
+  $("engine").value=S.engine;$("engineHint").textContent=hints[S.engine];
+  $("mmBox").hidden=S.engine!=="mymemory";$("llmBox").hidden=S.engine!=="llm";$("oaBox").hidden=S.engine!=="chatgpt";
+  $("mmEmail").value=S.mmEmail;$("llmBase").value=S.llmBase;$("llmKey").value=S.llmKey;$("llmModel").value=S.llmModel;$("oaKey").value=S.oaKey;$("oaModel").value=S.oaModel;
+  $("out").value=S.out;$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
+  $("rate").value=S.rate;$("rateV").textContent=(+S.rate).toFixed(1)+"×";
+  $("sil").value=S.sil;$("silV").textContent=(+S.sil).toFixed(1);
+}
+const bindVal=(id,key,num)=>{$(id).addEventListener(num?"input":"change",e=>{S[key]=num?+e.target.value:e.target.value.trim();store.set(key,S[key]);fellBack=false;syncSettings()})};
+const bindChk=(id,key)=>{$(id).onchange=e=>{S[key]=e.target.checked;store.set(key,S[key])}};
+bindVal("engine","engine");bindVal("mmEmail","mmEmail");bindVal("llmBase","llmBase");bindVal("llmKey","llmKey");bindVal("llmModel","llmModel");bindVal("oaKey","oaKey");bindVal("oaModel","oaModel");
+$("oaTest").onclick=async()=>{
+  S.oaKey=$("oaKey").value.trim();S.oaModel=$("oaModel").value.trim()||"gpt-4o-mini";store.set("oaKey",S.oaKey);store.set("oaModel",S.oaModel);
+  const r=$("oaResult");r.textContent="正在连接 ChatGPT…";
+  try{const out=await engines.chatgpt("你好，很高兴认识你。",L("zh-CN"),L("en-US"));r.textContent="✓ 连接成功：「你好，很高兴认识你。」→ "+out}
+  catch(e){r.textContent="✗ 连接失败："+(e.name==="AbortError"?"网络超时":e.message)}
+};
+bindVal("rate","rate",true);bindVal("sil","sil",true);
+bindVal("out","out");
+function syncOut(){$("spk").setAttribute("aria-pressed",S.out==="speaker");syncLangs()}
+$("out").addEventListener("change",syncOut);
+$("spk").onclick=()=>{unlockTTS();S.out=S.out==="speaker"?"auto":"speaker";store.set("out",S.out);syncOut();
+  toast(S.out==="speaker"?"已切换到手机外放":"跟随系统：连着耳机就用耳机")};
+bindChk("auto","auto");bindChk("bigMine","bigMine");bindChk("liveSpeak","liveSpeak");
+$("openSet").onclick=()=>{syncSettings();$("sheet").hidden=false};
+$("closeSet").onclick=()=>{$("sheet").hidden=true};
+$("sheet").addEventListener("click",e=>{if(e.target.id==="sheet")$("sheet").hidden=true});
+$("testVoice").onclick=()=>{unlockTTS();speak({out:L(S.b).id.startsWith("zh")?"你好，这是译文播报的声音。":"Hello, this is how translations will sound.",to:S.b})};
+
+/* ---------- 启动 ---------- */
+syncLangs();setMode(S.mode);setUI();syncOut();
+if(!SR)notice("这个浏览器不支持语音识别。iPhone 请用 Safari，安卓请用 Chrome；现在仍可以打字翻译。");
+else if(!window.isSecureContext)notice("需要通过 https 网址打开才能使用麦克风。");
+if("serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("sw.js").catch(()=>{});
+}
+</script>
+</body>
+</html>
