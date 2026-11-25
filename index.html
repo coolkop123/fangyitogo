@@ -153,7 +153,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.1</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.2</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -183,6 +183,27 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
     </div>
 
     <h3>播报</h3>
+    <label class="f">播报声音
+      <select id="voiceEng">
+        <option value="system">系统声音（免费，最快）</option>
+        <option value="openai">OpenAI 语音（更自然，需 API Key）</option>
+      </select>
+    </label>
+    <div id="ttsBox">
+      <label class="f">声音
+        <select id="ttsVoice">
+          <option value="marin">marin（推荐）</option>
+          <option value="cedar">cedar（推荐）</option>
+          <option value="alloy">alloy</option><option value="ash">ash</option><option value="ballad">ballad</option>
+          <option value="coral">coral</option><option value="echo">echo</option><option value="fable">fable</option>
+          <option value="nova">nova</option><option value="onyx">onyx</option><option value="sage">sage</option>
+          <option value="shimmer">shimmer</option><option value="verse">verse</option>
+        </select>
+      </label>
+      <label class="f">OpenAI API Key（和 ChatGPT 翻译共用同一个）<input type="password" id="oaKey2" placeholder="sk-…" autocomplete="off"></label>
+      <label class="f">语音模型<input type="text" id="ttsModel" placeholder="gpt-4o-mini-tts" autocapitalize="off" spellcheck="false"></label>
+      <p class="hint">选好后点下面的「试听声音」。每句要多等约 1 秒，按用量计费；出错时自动改用系统声音。OpenAI 说明这个语音模型将于 2027 年 1 月 6 日停用，到时需要更新。</p>
+    </div>
     <label class="f">声音从哪里播放
       <select id="out">
         <option value="auto">跟随系统（连着耳机就用耳机）</option>
@@ -252,7 +273,8 @@ const S={
   engine:store.get("engine","google"),mmEmail:store.get("mmEmail",""),
   llmBase:store.get("llmBase",""),llmKey:store.get("llmKey",""),llmModel:store.get("llmModel",""),oaKey:store.get("oaKey",""),oaModel:store.get("oaModel","gpt-4o-mini"),
   auto:store.get("auto",true),bigMine:store.get("bigMine",false),liveSpeak:store.get("liveSpeak",true),
-  rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto"),flip:store.get("flip",false)
+  rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto"),flip:store.get("flip",false),
+  voice:store.get("voice","system"),ttsVoice:store.get("ttsVoice","marin"),ttsModel:store.get("ttsModel","gpt-4o-mini-tts")
 };
 let items=store.get("items",[]);
 
@@ -374,6 +396,7 @@ function loadVoices(){if(synth)voices=synth.getVoices()}
 if(synth){loadVoices();synth.onvoiceschanged=loadVoices}
 const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
 function unlockTTS(){ // iOS 必须在用户点击里先说一次，之后才允许自动播报
+  unlockAudio();
   if(!synth||unlocked)return;unlocked=true;
   try{synth.cancel();const u=new SpeechSynthesisUtterance(" ");u.volume=0.01;u.rate=2;synth.speak(u)}catch(e){}
 }
@@ -390,9 +413,15 @@ function pickVoice(lang){
 const AS=navigator.audioSession;
 function setSession(t){try{if(AS&&AS.type!==t)AS.type=t}catch(e){}}
 const loud=()=>S.out==="speaker";
-const ttsBusy=()=>!!synth&&(synth.speaking||synth.pending);
+const ttsBusy=()=>(!!synth&&(synth.speaking||synth.pending))||cloudOn||cloudQ.length>0;
 let speakSeq=0;
 function speak(it,queue){
+  if(!it.out)return;
+  if(!queue)stopCloud();
+  if(useCloud())return cloudSpeak(it,queue);
+  sysSpeak(it,queue);
+}
+function sysSpeak(it,queue){
   if(!synth){toast("此浏览器不支持朗读");return}
   if(!it.out)return;
   const seq=++speakSeq;
@@ -424,6 +453,72 @@ function speak(it,queue){
     },1800);
   };
   setTimeout(()=>go(true),wait);
+}
+/* ---------- OpenAI 语音 ---------- */
+const player=new Audio();player.playsInline=true;player.preload="auto";
+const SILENT="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+let audioUnlocked=false,cloudOn=false,cloudGen=0,cloudFailed=false;const cloudQ=[];const cloudCache=new Map();
+function unlockAudio(){ // iOS：<audio> 也要在点击里先播一次，之后才能自动播放
+  if(audioUnlocked)return;audioUnlocked=true;
+  try{player.src=SILENT;const p=player.play();if(p)p.catch(()=>{audioUnlocked=false})}catch(e){audioUnlocked=false}
+}
+const useCloud=()=>S.voice==="openai"&&!!S.oaKey&&!cloudFailed;
+function cloudFetch(text){
+  const model=S.ttsModel||"gpt-4o-mini-tts",voice=S.ttsVoice||"marin",key=model+"|"+voice+"|"+text;
+  if(cloudCache.has(key))return cloudCache.get(key);
+  const p=(async()=>{
+    const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),15000);
+    try{
+      const body={model,voice,input:text,response_format:"mp3"};
+      if(!/^tts-1/.test(model))body.instructions="Speak naturally and clearly, like a warm, friendly interpreter. Use native pronunciation for the language of the text.";
+      const r=await fetch("https://api.openai.com/v1/audio/speech",{method:"POST",signal:ctl.signal,
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+S.oaKey},body:JSON.stringify(body)});
+      if(!r.ok)throw new Error({400:"声音或模型名称不对",401:"API Key 不正确",403:"当前地区或账号无权使用",404:"语音模型名称不对",429:"额度不足或请求太频繁"}[r.status]||("HTTP "+r.status));
+      return URL.createObjectURL(await r.blob());
+    }finally{clearTimeout(t)}
+  })();
+  cloudCache.set(key,p);p.catch(()=>cloudCache.delete(key));
+  if(cloudCache.size>40){const k=cloudCache.keys().next().value;const old=cloudCache.get(k);cloudCache.delete(k);old.then(u=>URL.revokeObjectURL(u),()=>{})}
+  return p;
+}
+function stopCloud(){cloudGen++;cloudQ.length=0;cloudOn=false;try{player.pause()}catch(e){}}
+function cloudSpeak(it,queue){
+  if(!queue&&synth)synth.cancel();
+  if(loud()&&active==="live"&&rec)pauseRec();   // 外放时先停收音，防止回声
+  cloudQ.push({it,url:cloudFetch(it.out)});      // 立刻开始下载，排队时也能提前准备好
+  if(!cloudOn)cloudNext(cloudGen);
+}
+async function cloudNext(gen){
+  if(gen!==cloudGen)return;
+  const job=cloudQ.shift();
+  if(!job){cloudOn=false;afterSpeak();return}
+  cloudOn=true;
+  const it=job.it,mark=on=>{if(!it.el)return;if(on){if(speakingEl)speakingEl.classList.remove("speaking");speakingEl=it.el}it.el.classList.toggle("speaking",on)};
+  let url;
+  try{url=await job.url}
+  catch(e){
+    if(gen!==cloudGen)return;
+    cloudFailed=true;   // 本次打开页面内改用系统声音，改设置后会重试
+    toast("OpenAI 语音不可用（"+(e.name==="AbortError"?"网络超时":e.message)+"），已改用系统声音");
+    const rest=[job,...cloudQ.splice(0)];cloudOn=false;
+    rest.forEach((j,i)=>sysSpeak(j.it,i>0));
+    return;
+  }
+  if(gen!==cloudGen)return;
+  const wait=Date.now()-micOffAt<700?700-(Date.now()-micOffAt):0;   // 等话筒释放
+  if(wait)await new Promise(r=>setTimeout(r,wait));
+  if(gen!==cloudGen)return;
+  if(!(active&&rec))setSession("playback");
+  player.onended=player.onerror=()=>{if(gen!==cloudGen)return;mark(false);cloudNext(gen)};
+  player.src=url;player.playbackRate=S.rate;player.preservesPitch=true;
+  mark(true);
+  try{await player.play()}
+  catch(e){
+    if(gen!==cloudGen)return;
+    mark(false);cloudQ.length=0;cloudOn=false;
+    if(e.name==="NotAllowedError"){audioUnlocked=false;toast("请先点一下「▶ 播放」，iPhone 需要点一次才允许自动播报")}
+    afterSpeak();
+  }
 }
 function afterSpeak(){
   setTimeout(()=>{
@@ -568,7 +663,7 @@ function syncSettings(){
   $("engine").value=S.engine;$("engineHint").textContent=hints[S.engine];
   $("mmBox").hidden=S.engine!=="mymemory";$("llmBox").hidden=S.engine!=="llm";$("oaBox").hidden=S.engine!=="chatgpt";
   $("mmEmail").value=S.mmEmail;$("llmBase").value=S.llmBase;$("llmKey").value=S.llmKey;$("llmModel").value=S.llmModel;$("oaKey").value=S.oaKey;$("oaModel").value=S.oaModel;
-  $("out").value=S.out;$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
+  $("out").value=S.out;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
   $("rate").value=S.rate;$("rateV").textContent=(+S.rate).toFixed(1)+"×";
   $("sil").value=S.sil;$("silV").textContent=(+S.sil).toFixed(1);
 }
@@ -583,6 +678,8 @@ $("oaTest").onclick=async()=>{
 };
 bindVal("rate","rate",true);bindVal("sil","sil",true);
 bindVal("out","out");
+bindVal("voiceEng","voice");bindVal("ttsVoice","ttsVoice");bindVal("ttsModel","ttsModel");bindVal("oaKey2","oaKey");
+["voiceEng","ttsVoice","ttsModel","oaKey2","oaKey"].forEach(id=>$(id).addEventListener("change",()=>{cloudFailed=false}));
 function syncOut(){$("spk").setAttribute("aria-pressed",S.out==="speaker");syncLangs()}
 $("out").addEventListener("change",syncOut);
 $("spk").onclick=()=>{unlockTTS();S.out=S.out==="speaker"?"auto":"speaker";store.set("out",S.out);syncOut();
