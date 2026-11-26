@@ -10,6 +10,7 @@ final class AudioRouter: ObservableObject {
 
     private var configured = false
     private var observer: NSObjectProtocol?
+    private var interruptObserver: NSObjectProtocol?
 
     private static let bluetoothPorts: Set<AVAudioSession.Port> = [.bluetoothHFP, .bluetoothA2DP, .bluetoothLE]
 
@@ -31,6 +32,15 @@ final class AudioRouter: ObservableObject {
                 Task { @MainActor in
                     self?.preferBluetoothInput()
                     self?.refresh()
+                }
+            }
+            // 电话、Siri 等打断结束后，重新激活音频
+            interruptObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+            ) { note in
+                let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                if raw == AVAudioSession.InterruptionType.ended.rawValue {
+                    try? AVAudioSession.sharedInstance().setActive(true)
                 }
             }
         }

@@ -3,12 +3,12 @@ import Speech
 
 enum ListenerError: LocalizedError {
     case unavailable(String)
-    case micBusy(Int)
+    case micBusy(String)
     var errorDescription: String? {
         switch self {
         case .unavailable(let id): return "此设备暂不支持「\(id)」的语音识别，或识别服务不可用。"
-        case .micBusy(let code):
-            return "麦克风暂时打不开（代码 \(code)）。可能正被其他 App（电话、视频、录音）占用，请关掉它们后再点一次；如果还不行，把酷天同声从后台划掉重新打开。"
+        case .micBusy(let detail):
+            return "麦克风打不开。请从屏幕右上角下拉打开控制中心，看看顶部写的是哪个 App 在用麦克风，把它关掉（或结束通话）后再试；如果还不行，把酷天同声从后台划掉重新打开。\n\n\(detail)"
         }
     }
 }
@@ -108,14 +108,23 @@ final class SpeechListener: ObservableObject {
         problem = nil
         meter.onLevel = { [weak self] v in Task { @MainActor in self?.level = v } }
 
-        do {
-            try startEngine()
-        } catch {
-            // 第一次失败（常见于刚播完视频、或音频还在「只播放」状态）：重新激活录音模式再试一次
-            Self.resetSession()
-            do { try startEngine() } catch {
-                throw ListenerError.micBusy((error as NSError).code)
+        // 依次尝试几种录音设置，前一种打不开就换下一种
+        var lastError: Error?
+        for attempt in 0..<4 {
+            do {
+                Self.prepareSession(attempt: attempt)
+                try startEngine()
+                lastError = nil
+                break
+            } catch {
+                lastError = error
+                engine.stop()
+                engine.inputNode.removeTap(onBus: 0)
             }
+        }
+        if let lastError {
+            Self.prepareSession(attempt: 0)          // 恢复正常设置，不影响播报
+            throw ListenerError.micBusy(Self.diagnose(lastError))
         }
         isRunning = true
         beginRequests()
@@ -123,37 +132,60 @@ final class SpeechListener: ObservableObject {
 
     /// 每次新建一个录音引擎（避免沿用旧的麦克风格式），确认麦克风可用后再启动。
     private func startEngine() throws {
-        Self.ensureRecordSession()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw NSError(domain: "EarTranslate.mic", code: 1852797029)
+            throw NSError(domain: "麦克风格式无效", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "采样率 \(Int(format.sampleRate))，声道 \(format.channelCount)"])
         }
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.makeTap(sink, meter))
         engine.prepare()
-        try engine.start()
+        do { try engine.start() } catch {
+            let ns = error as NSError
+            throw NSError(domain: "启动录音", code: ns.code, userInfo: [NSLocalizedDescriptionKey: ns.localizedDescription])
+        }
     }
 
-    /// 确保音频处在「录音 + 播放」模式并已激活。
-    static func ensureRecordSession() {
+    /// 第 0 种：正常设置；1：先停用再重新激活；2：去掉蓝牙等选项；3：只录音模式。
+    static func prepareSession(attempt: Int) {
         let s = AVAudioSession.sharedInstance()
-        if s.category != .playAndRecord {
+        switch attempt {
+        case 0:
+            if s.category != .playAndRecord {
+                try? s.setCategory(.playAndRecord, mode: .default,
+                                   options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .duckOthers])
+            }
+        case 1:
+            try? s.setActive(false, options: .notifyOthersOnDeactivation)
             try? s.setCategory(.playAndRecord, mode: .default,
                                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .duckOthers])
+        case 2:
+            try? s.setActive(false, options: .notifyOthersOnDeactivation)
+            try? s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+        default:
+            try? s.setActive(false, options: .notifyOthersOnDeactivation)
+            try? s.setCategory(.record, mode: .default, options: [])
         }
         try? s.setActive(true)
     }
 
-    static func resetSession() {
+    /// 打不开麦克风时，把当时的音频状态写进提示，方便排查。
+    static func diagnose(_ error: Error) -> String {
         let s = AVAudioSession.sharedInstance()
-        try? s.setActive(false, options: .notifyOthersOnDeactivation)
-        try? s.setCategory(.playAndRecord, mode: .default,
-                           options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .duckOthers])
-        try? s.setActive(true)
+        let ns = error as NSError
+        let inputs = s.availableInputs?.map(\.portName).joined(separator: "、") ?? "无"
+        let perm: String
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: perm = "已允许"
+        case .denied: perm = "已拒绝"
+        default: perm = "未决定"
+        }
+        return "失败步骤：\(ns.domain)（代码 \(ns.code)）\n可用麦克风：\(inputs)\n麦克风权限：\(perm)\n其他 App 正在用音频：\(s.isOtherAudioPlaying ? "是" : "否")"
     }
+
 
     /// 稍等让最后几个字识别出来，再停止并提交。
     func stopAndFlush() async {
@@ -170,6 +202,7 @@ final class SpeechListener: ObservableObject {
         endRequests()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
+        Self.prepareSession(attempt: 0)          // 如果刚才用的是「只录音」模式，恢复成能播报的设置
         if flush {
             if segmentOnSilence {
                 emit(lastTexts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: 0) })
