@@ -26,10 +26,18 @@ jobs:
       - name: 检查密钥是否已设置
         id: check
         run: |
-          if [ -z "$APPLE_TEAM_ID" ] || [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
-            echo "还没有在 GitHub Secrets 里设置苹果账号密钥，跳过上传。"
+          missing=""
+          [ -z "$APPLE_TEAM_ID" ] && missing="$missing APPLE_TEAM_ID"
+          [ -z "$ASC_KEY_ID" ] && missing="$missing ASC_KEY_ID"
+          [ -z "$ASC_ISSUER_ID" ] && missing="$missing ASC_ISSUER_ID"
+          [ -z "$ASC_KEY_P8" ] && missing="$missing ASC_KEY_P8"
+          if [ -n "$missing" ]; then
+            echo "缺少这些密钥（Repository secrets）：$missing"
+            echo "::warning::缺少密钥：$missing。请在 Settings › Secrets and variables › Actions › Secrets 里添加。"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
+            echo "4 个密钥都已设置。"
+            case "$ASC_KEY_P8" in *"BEGIN PRIVATE KEY"*) echo "ASC_KEY_P8 格式正确";; *) echo "::warning::ASC_KEY_P8 里没有找到 BEGIN PRIVATE KEY，请确认复制了 .p8 文件的全部内容";; esac
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
