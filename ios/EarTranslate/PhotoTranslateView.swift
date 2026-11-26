@@ -26,12 +26,19 @@ struct PhotoTranslateView: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHeader(title: "图片翻译") {
-                if !lines.isEmpty {
-                    Button {
+                Menu {
+                    Button("复制全部译文", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = lines.map { $0.translation ?? $0.text }.joined(separator: "\n")
-                    } label: { CircleIcon(system: "doc.on.doc") }
-                    .accessibilityLabel("复制全部译文")
-                }
+                    }
+                    Button("复制原文和译文", systemImage: "doc.on.doc.fill") {
+                        UIPasteboard.general.string = lines.map { "\($0.text)\n→ \($0.translation ?? "")" }.joined(separator: "\n\n")
+                    }
+                    Button("清空记录", systemImage: "trash", role: .destructive) {
+                        lines = []; image = nil; status = ""; pickerItem = nil
+                    }
+                } label: { CircleIcon(system: "ellipsis") }
+                .disabled(lines.isEmpty && image == nil)
+                .accessibilityLabel("更多")
             }
 
             HStack(spacing: 10) {
