@@ -91,8 +91,8 @@ This app requires no login. Tap "同传收听" (Live), then "开始同传" (Star
 | 栏目 | 填写内容 |
 |---|---|
 | Name | Cool Interpreter |
-| Subtitle | Live earbud translation, offline |
-| Keywords | translate,translator,interpreter,live translation,voice translator,offline,earbuds,chinese,english,travel |
+| Subtitle | Offline earbud translator |
+| Keywords | translate,translator,interpreter,live translation,voice translator,offline,earbuds,chinese,english |
 
 **Promotional Text**
 
