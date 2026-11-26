@@ -30,7 +30,7 @@ struct ContentView: View {
                 }
                 controls
             }
-            .navigationTitle("随身同传")
+            .navigationTitle("酷天同声")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

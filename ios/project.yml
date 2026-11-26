@@ -25,7 +25,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-        INFOPLIST_KEY_CFBundleDisplayName: 随身同传
+        INFOPLIST_KEY_CFBundleDisplayName: 酷天同声
         INFOPLIST_KEY_NSMicrophoneUsageDescription: 需要使用麦克风（包括蓝牙耳机麦克风）收听要翻译的语音。
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: 需要语音识别把说的话转成文字再翻译。
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

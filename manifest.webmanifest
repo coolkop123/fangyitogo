@@ -1,6 +1,6 @@
 {
-  "name": "随身同传",
-  "short_name": "随身同传",
+  "name": "酷天同声",
+  "short_name": "酷天同声",
   "description": "连接蓝牙耳机的实时语音翻译",
   "start_url": "./",
   "scope": "./",

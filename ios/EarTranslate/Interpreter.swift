@@ -98,7 +98,7 @@ final class Interpreter: ObservableObject {
         if !permitted {
             permitted = await SpeechListener.requestPermissions()
             guard permitted else {
-                errorMessage = "需要麦克风和语音识别权限：请到 设置 › 随身同传 中打开。"
+                errorMessage = "需要麦克风和语音识别权限：请到 设置 › 酷天同声 中打开。"
                 return
             }
         }

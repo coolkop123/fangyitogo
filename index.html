@@ -7,11 +7,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="随身同传">
+<meta name="apple-mobile-web-app-title" content="酷天同声">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>随身同传</title>
+<title>酷天同声</title>
 <style>
 :root{--bg:#0b1433;--panel:#141e4a;--line:#26326e;--ink:#eef1ff;--mute:#9ca8d8;--a:#4fc1c6;--b:#f7e463;--rec:#e8452c;
   --st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px)}
@@ -114,7 +114,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 <body>
 <div class="app">
   <header>
-    <h1>随身同传</h1>
+    <h1>酷天同声</h1>
     <div class="seg" role="group" aria-label="模式">
       <button id="mTalk" aria-pressed="true">面对面</button>
       <button id="mLive" aria-pressed="false">同传收听</button>
@@ -161,7 +161,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.9</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.10</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -992,7 +992,7 @@ function copy(t){
 }
 const transcript=()=>items.map(i=>(i.side==="a"?"我：":"对方：")+i.src+"\n→ "+(i.out||"")).join("\n\n");
 $("copyAll").onclick=()=>copy(transcript());
-$("shareAll").onclick=()=>{const t=transcript();if(navigator.share)navigator.share({title:"随身同传记录",text:t}).catch(()=>{});else copy(t)};
+$("shareAll").onclick=()=>{const t=transcript();if(navigator.share)navigator.share({title:"酷天同声记录",text:t}).catch(()=>{});else copy(t)};
 $("clear").onclick=()=>{items.forEach(i=>i.el&&i.el.remove());items=[];save();$("empty").hidden=false;toast("已清空")};
 
 /* ---------- 设置 ---------- */
