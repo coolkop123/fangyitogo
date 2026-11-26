@@ -92,6 +92,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 .f input[type=range]{width:100%;accent-color:var(--a)}
 .chk{flex-direction:row;align-items:center;justify-content:space-between;color:var(--ink);font-size:16px;min-height:44px}
 .chk input{width:24px;height:24px;accent-color:var(--a);flex:none}
+.meter{height:10px;border-radius:5px;background:var(--line);overflow:hidden;margin-top:12px}.meter i{display:block;height:100%;width:0;background:var(--a);transition:width .08s}
 .hint{font-size:13px;color:var(--mute);margin:4px 0 0}
 .btnrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .btnrow button{min-height:44px;border-radius:12px;border:1px solid var(--line);background:var(--panel);padding:0 14px;font-weight:600}
@@ -160,7 +161,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.4</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.5</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -188,6 +189,13 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
       <label class="f">模型<input type="text" id="llmModel" placeholder="deepseek-chat" autocapitalize="off" spellcheck="false"></label>
       <p class="hint">需要该服务允许浏览器直接调用。翻译失败时会自动改用免费引擎。</p>
     </div>
+
+    <h3>麦克风</h3>
+    <label class="f">用哪个麦克风<select id="micSel"><option value="">系统默认麦克风</option></select></label>
+    <label class="f chk">专业麦克风模式（关闭降噪和自动增益）<input type="checkbox" id="rawMic"></label>
+    <div class="btnrow"><button type="button" id="micTest">测试麦克风</button></div>
+    <div id="micMeter" hidden><div class="meter"><i id="micBar"></i></div><p class="hint" id="micName"></p></div>
+    <p class="hint">USB、Lightning / USB‑C 或无线接收器的专业麦克风连上后会出现在列表里。第一次要点「测试麦克风」并允许权限，才会显示麦克风名称。选了指定麦克风后，识别会改用 OpenAI（需要 API Key），因为 iPhone 听写只能用系统默认麦克风。iPhone 插上外接麦克风后，一般会自动把它当作默认麦克风。</p>
 
     <h3>播报</h3>
     <label class="f">播报声音
@@ -288,7 +296,8 @@ const S={
   auto:store.get("auto",true),bigMine:store.get("bigMine",false),liveSpeak:store.get("liveSpeak",true),
   rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto"),flip:store.get("flip",false),
   voice:store.get("voice","system"),ttsVoice:store.get("ttsVoice","marin"),ttsModel:store.get("ttsModel","gpt-4o-mini-tts"),
-  autoLang:store.get("autoLang",true),sttModel:store.get("sttModel","gpt-transcribe")
+  autoLang:store.get("autoLang",true),sttModel:store.get("sttModel","gpt-transcribe"),
+  mic:store.get("mic",""),rawMic:store.get("rawMic",false)
 };
 let items=store.get("items",[]);
 
@@ -578,9 +587,10 @@ function showPartial(t){$("partial").textContent=t||""}
 function toggle(side){
   unlockTTS();
   if(active){stopListen();return}
-  if(side==="live"&&S.autoLang&&S.oaKey){startAuto("live");return}
+  if(side==="live"&&S.oaKey&&(S.autoLang||S.mic)){startAuto("live");return}
   const canSTT=!!S.oaKey&&!!(window.AudioContext||window.webkitAudioContext)&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
-  if(canSTT&&(!SR||srBroken||INAPP)){startAuto(side);return}   // 系统识别用不了：改用 OpenAI 识别
+  if(canSTT&&(!SR||srBroken||INAPP||S.mic)){startAuto(side);return}   // 系统识别用不了，或选了指定麦克风：改用 OpenAI 识别
+  if(S.mic&&!S.oaKey)toast("系统听写只能用默认麦克风；要用选中的麦克风，请在设置里填 OpenAI API Key");
   if(!SR){notice(noSRMsg());return}
   if(synth)synth.cancel();
   active=side;stopping=null;talkBuf="";sess="";restarts=[];setSession("auto");
@@ -646,6 +656,58 @@ function armSeg(){ // 同传：停顿超过阈值就断句
 }
 /* ---------- 同传：自动识别语言（录音 → OpenAI 转写 → 判断方向） ---------- */
 let au=null,sttChain=Promise.resolve();
+/* ---------- 麦克风选择 ---------- */
+function micConstraints(){
+  const raw=!!S.rawMic,c={echoCancellation:!raw,noiseSuppression:!raw,autoGainControl:!raw,channelCount:1};
+  if(S.mic)c.deviceId={exact:S.mic};
+  return {audio:c};
+}
+async function openMic(){
+  try{return await navigator.mediaDevices.getUserMedia(micConstraints())}
+  catch(e){
+    if(S.mic&&(e.name==="OverconstrainedError"||e.name==="NotFoundError")){
+      toast("找不到选中的麦克风，已改用系统默认麦克风");
+      const c=micConstraints();delete c.audio.deviceId;return await navigator.mediaDevices.getUserMedia(c);
+    }
+    throw e;
+  }
+}
+async function listMics(){
+  const sel=$("micSel");
+  if(!navigator.mediaDevices||!navigator.mediaDevices.enumerateDevices){sel.disabled=true;return}
+  let devs=[];try{devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="audioinput")}catch(e){}
+  sel.textContent="";
+  const add=(v,t)=>{const o=document.createElement("option");o.value=v;o.textContent=t;sel.append(o)};
+  add("","系统默认麦克风");
+  devs.filter(d=>d.deviceId&&d.deviceId!=="default"&&d.deviceId!=="communications")
+      .forEach((d,i)=>add(d.deviceId,d.label||("麦克风 "+(i+1)+"（测试后显示名称）")));
+  if(S.mic&&![...sel.options].some(o=>o.value===S.mic))add(S.mic,"之前选的麦克风（现在没连接）");
+  sel.value=S.mic||"";
+}
+let micTest=null;
+async function testMic(){
+  if(micTest){stopMicTest();return}
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  if(!Ctx||!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){toast("这个浏览器不支持麦克风测试");return}
+  const ctx=new Ctx();
+  $("micTest").textContent="停止测试";$("micMeter").hidden=false;$("micName").textContent="正在打开麦克风…";
+  let stream;
+  try{stream=await openMic()}
+  catch(e){try{ctx.close()}catch(_){}$("micTest").textContent="测试麦克风";$("micName").textContent=e.name==="NotAllowedError"?"没有拿到麦克风权限":"打不开麦克风（"+e.name+"）";return}
+  try{await ctx.resume()}catch(e){}
+  const an=ctx.createAnalyser();an.fftSize=1024;ctx.createMediaStreamSource(stream).connect(an);
+  const d=new Float32Array(an.fftSize),tr=stream.getAudioTracks()[0];
+  $("micName").textContent="正在使用："+((tr&&tr.label)||"系统默认麦克风")+"。对着麦克风说话，绿条应该跟着跳动";
+  micTest={ctx,stream,
+    timer:setInterval(()=>{an.getFloatTimeDomainData(d);let x=0;for(let i=0;i<d.length;i++)x+=d[i]*d[i];$("micBar").style.width=Math.min(100,Math.round(Math.sqrt(x/d.length)*400))+"%"},80),
+    stop:setTimeout(stopMicTest,10000)};
+  listMics();   // 拿到权限后才能显示麦克风名称
+}
+function stopMicTest(){
+  const m=micTest;if(!m)return;micTest=null;
+  clearInterval(m.timer);clearTimeout(m.stop);m.stream.getTracks().forEach(t=>t.stop());try{m.ctx.close()}catch(e){}
+  $("micTest").textContent="测试麦克风";$("micBar").style.width="0";
+}
 function noSRMsg(){return INAPP?"当前是在 App 内置浏览器里打开的，系统语音识别用不了。请点右上角「···」选择「在 Safari 中打开」，或在设置里填 OpenAI API Key 改用 OpenAI 识别。":"这个浏览器不支持系统语音识别。iPhone 请用 Safari，安卓请用 Chrome；也可以在设置里填 OpenAI API Key 改用 OpenAI 识别。"}
 async function startAuto(mode){
   const Ctx=window.AudioContext||window.webkitAudioContext;
@@ -655,8 +717,8 @@ async function startAuto(mode){
   active=mode;stopping=null;setUI();wake(true);setSession("play-and-record");
   showPartial(mode==="live"?"正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）":"🎙 正在录音，说完再点一次按钮");
   let stream;
-  try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
-  catch(e){try{ctx.close()}catch(_){}active=null;setUI();wake(false);showPartial("");notice("没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。");return}
+  try{stream=await openMic()}
+  catch(e){try{ctx.close()}catch(_){}active=null;setUI();wake(false);showPartial("");notice(e.name==="NotAllowedError"?"没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。":"打不开麦克风（"+e.name+"），请检查麦克风是否连好。");return}
   if(active!==mode){stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
   try{await ctx.resume()}catch(e){}
   const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(4096,1,1);
@@ -680,13 +742,13 @@ function onAudio(d){
   if(!au.speaking){
     au.floor=au.floor*0.95+Math.min(rms,0.05)*0.05;            // 估计环境噪声
     au.pre.push(buf);if(au.pre.length>4)au.pre.shift();         // 保留开口前约 0.3 秒
-    if(rms>Math.max(0.012,au.floor*3)){
+    if(rms>Math.max(S.rawMic?0.006:0.012,au.floor*3)){
       au.voiced+=ms;
       if(au.voiced>=170){au.speaking=true;au.chunks=au.pre.splice(0);au.silent=0;showPartial("🎙 正在说话…")}
     }else au.voiced=0;
   }else{
     au.chunks.push(buf);
-    if(rms<Math.max(0.01,au.floor*2.2)){au.silent+=ms;if(au.silent>=S.sil*1000)endSeg(true)}
+    if(rms<Math.max(S.rawMic?0.005:0.01,au.floor*2.2)){au.silent+=ms;if(au.silent>=S.sil*1000)endSeg(true)}
     else au.silent=0;
     if(au.chunks.length*ms>15000)endSeg(true);                  // 一句最长 15 秒
   }
@@ -815,7 +877,7 @@ function syncSettings(){
   $("engine").value=S.engine;$("engineHint").textContent=hints[S.engine];
   $("mmBox").hidden=S.engine!=="mymemory";$("llmBox").hidden=S.engine!=="llm";$("oaBox").hidden=S.engine!=="chatgpt";
   $("mmEmail").value=S.mmEmail;$("llmBase").value=S.llmBase;$("llmKey").value=S.llmKey;$("llmModel").value=S.llmModel;$("oaKey").value=S.oaKey;$("oaModel").value=S.oaModel;
-  $("out").value=S.out;$("autoLang").checked=S.autoLang;$("sttModel").value=S.sttModel;$("sttBox").hidden=!S.autoLang;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
+  $("out").value=S.out;$("autoLang").checked=S.autoLang;$("rawMic").checked=S.rawMic;$("sttModel").value=S.sttModel;$("sttBox").hidden=!S.autoLang;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
   $("rate").value=S.rate;$("rateV").textContent=(+S.rate).toFixed(1)+"×";
   $("sil").value=S.sil;$("silV").textContent=(+S.sil).toFixed(1);
 }
@@ -830,7 +892,11 @@ $("oaTest").onclick=async()=>{
 };
 bindVal("rate","rate",true);bindVal("sil","sil",true);
 bindVal("out","out");
-bindChk("autoLang","autoLang");bindVal("sttModel","sttModel");
+bindChk("autoLang","autoLang");bindChk("rawMic","rawMic");
+$("micSel").onchange=e=>{S.mic=e.target.value;store.set("mic",S.mic);stopMicTest()};
+$("rawMic").addEventListener("change",stopMicTest);
+$("micTest").onclick=testMic;
+if(navigator.mediaDevices&&navigator.mediaDevices.addEventListener)navigator.mediaDevices.addEventListener("devicechange",()=>{if(!$("sheet").hidden)listMics()});bindVal("sttModel","sttModel");
 ["autoLang","oaKey","oaKey2"].forEach(id=>$(id).addEventListener("change",()=>{$("sttBox").hidden=!S.autoLang;syncLangs()}));
 bindVal("voiceEng","voice");bindVal("ttsVoice","ttsVoice");bindVal("ttsModel","ttsModel");bindVal("oaKey2","oaKey");
 ["voiceEng","ttsVoice","ttsModel","oaKey2","oaKey"].forEach(id=>$(id).addEventListener("change",()=>{cloudFailed=false}));
@@ -839,9 +905,9 @@ $("out").addEventListener("change",syncOut);
 $("spk").onclick=()=>{unlockTTS();S.out=S.out==="speaker"?"auto":"speaker";store.set("out",S.out);syncOut();
   toast(S.out==="speaker"?"已切换到手机外放":"跟随系统：连着耳机就用耳机")};
 bindChk("auto","auto");bindChk("bigMine","bigMine");bindChk("liveSpeak","liveSpeak");
-$("openSet").onclick=()=>{syncSettings();$("sheet").hidden=false};
-$("closeSet").onclick=()=>{$("sheet").hidden=true};
-$("sheet").addEventListener("click",e=>{if(e.target.id==="sheet")$("sheet").hidden=true});
+$("openSet").onclick=()=>{syncSettings();listMics();$("sheet").hidden=false};
+$("closeSet").onclick=()=>{stopMicTest();$("sheet").hidden=true};
+$("sheet").addEventListener("click",e=>{if(e.target.id==="sheet"){stopMicTest();$("sheet").hidden=true}});
 $("testVoice").onclick=()=>{unlockTTS();speak({out:L(S.b).id.startsWith("zh")?"你好，这是译文播报的声音。":"Hello, this is how translations will sound.",to:S.b})};
 
 /* ---------- 启动 ---------- */
