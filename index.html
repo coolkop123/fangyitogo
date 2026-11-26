@@ -161,7 +161,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.8</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.9</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -837,7 +837,7 @@ async function startAuto(mode){
   if(active!==mode){liveAuto=false;stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
   try{await ctx.resume()}catch(e){}
   const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(4096,1,1);
-  au={mode,engine,ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005,len:0,shown:0};
+  au={mode,engine,ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0,lvl:0,segMs:0,len:0,shown:0};
   proc.onaudioprocess=e=>onAudio(e.inputBuffer.getChannelData(0));
   src.connect(proc);proc.connect(ctx.destination);   // iOS 要连到输出才会运行；这里输出的是静音
 }
@@ -854,18 +854,25 @@ function onAudio(d){
   if(ttsBusy()){if(au.speaking)endSeg(false);au.pre=[];return}   // 播报时不收，防止回声
   let sum=0;for(let i=0;i<d.length;i++)sum+=d[i]*d[i];
   const rms=Math.sqrt(sum/d.length),buf=new Float32Array(d);
+  // 环境噪声：遇到更安静的声音很快跟下去，遇到更响的只慢慢往上调（说话时也一直更新）
+  if(au.floor<=0)au.floor=rms;
+  au.floor=rms<au.floor?au.floor*0.7+rms*0.3:au.floor*0.997+rms*0.003;
+  const minLvl=S.rawMic?0.003:0.006;
   if(!au.speaking){
-    au.floor=au.floor*0.95+Math.min(rms,0.05)*0.05;            // 估计环境噪声
     au.pre.push(buf);if(au.pre.length>4)au.pre.shift();         // 保留开口前约 0.3 秒
-    if(rms>Math.max(S.rawMic?0.006:0.012,au.floor*3)){
+    if(rms>Math.max(minLvl,au.floor*3)){                        // 明显比环境响：开始说话
       au.voiced+=ms;
-      if(au.voiced>=170){au.speaking=true;au.chunks=au.pre.splice(0);au.silent=0;showPartial("🎙 正在说话…")}
+      if(au.voiced>=170){au.speaking=true;au.chunks=au.pre.splice(0);au.silent=0;au.lvl=rms;au.segMs=0;au.shown=-1}
     }else au.voiced=0;
   }else{
-    au.chunks.push(buf);
-    if(rms<Math.max(S.rawMic?0.005:0.01,au.floor*2.2)){au.silent+=ms;if(au.silent>=S.sil*1000)endSeg(true)}
-    else au.silent=0;
-    if(au.chunks.length*ms>15000)endSeg(true);                  // 一句最长 15 秒
+    au.chunks.push(buf);au.segMs+=ms;
+    // 说完的判断：比环境噪声不再明显响，或者已经比刚才说话时轻很多
+    const quiet=rms<Math.max(minLvl*0.7,au.floor*1.8)||rms<au.lvl*0.22;
+    if(quiet){au.silent+=ms;if(au.silent>=S.sil*1000){endSeg(true);return}}
+    else{au.silent=0;au.lvl=au.lvl*0.9+rms*0.1}                 // 说话音量的平均值
+    const sec=Math.floor(au.segMs/1000);
+    if(sec!==au.shown){au.shown=sec;showPartial("🎙 正在说话… "+sec+" 秒")}
+    if(au.segMs>8000)endSeg(true);                              // 一段最长 8 秒，先识别出来，免得一直等
   }
 }
 function endSeg(send){
