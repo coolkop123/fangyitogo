@@ -161,7 +161,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.5</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.6</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -229,10 +229,10 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
     <label class="f chk">面对面：说完自动播报译文<input type="checkbox" id="auto"></label>
     <label class="f chk">我说的译文同时全屏显示大字（给对方看）<input type="checkbox" id="bigMine"></label>
     <label class="f chk">同传：边听边在耳机里播报<input type="checkbox" id="liveSpeak"></label>
-    <label class="f chk">同传：自动识别双方语言（用 OpenAI）<input type="checkbox" id="autoLang"></label>
+    <label class="f chk">同传：自动识别双方语言<input type="checkbox" id="autoLang"></label>
     <div id="sttBox">
       <label class="f">识别模型<input type="text" id="sttModel" placeholder="gpt-transcribe" autocapitalize="off" spellcheck="false"></label>
-      <p class="hint" id="autoHint">打开后同传不用分谁在说：听到哪种语言，就翻译成另一种。和 ChatGPT 共用 API Key；每句约多等 1–2 秒，按用量计费。播报译文时会暂停收音，避免把译文又识别一遍。</p>
+      <p class="hint" id="autoHint">打开后同传不用分谁在说：听到哪种语言，就翻译成另一种。<b>没填 OpenAI Key 时用免费方式</b>：用 iPhone 听写按中文（或日文、韩文等）来听，识别出汉字算一方、英文字母算另一方，适合中文和英文这样文字不同的两种语言。填了 OpenAI Key 会改用 OpenAI 识别，更准，按用量计费。播报译文时会暂停收音，避免把译文又识别一遍。</p>
     </div>
     <label class="f"><span>语速 <b id="rateV"></b></span><input type="range" id="rate" min="0.6" max="1.6" step="0.1"></label>
     <label class="f"><span>同传断句：停顿 <b id="silV"></b> 秒算一句</span><input type="range" id="sil" min="0.6" max="2.5" step="0.1"></label>
@@ -315,7 +315,7 @@ function syncLangs(){
   const A=L(S.a).n,B=L(S.b).n;
   $("subA").textContent=A+" → "+B;$("subB").textContent=B+" → "+A;
   const auto=S.autoLang&&!!S.oaKey,where=S.out==="speaker"?"手机外放":"耳机里播";
-  $("subL").textContent=auto?"自动识别 "+A+" ⇄ "+B+"，"+where+"译文":"听"+B+"，"+where+A;
+  $("subL").textContent=auto?"自动识别 "+A+" ⇄ "+B+"，"+where+"译文":freeDual()?"免费双向："+A+" ⇄ "+B+"，"+where+"译文":"听"+B+"，"+where+A;
 }
 function langChange(){stopListen(true);S.a=$("langA").value;S.b=$("langB").value;store.set("a",S.a);store.set("b",S.b);syncLangs()}
 $("langA").onchange=langChange;$("langB").onchange=langChange;
@@ -567,7 +567,7 @@ function afterSpeak(){
 function pauseRec(){
   clearTimeout(segTimer);
   const r=rec;rec=null;micOffAt=Date.now();
-  if(sess.trim())translate(sess,"b");
+  if(sess.trim())translate(sess,liveSide(sess));
   sess="";showPartial("播报中，稍后继续收听…");
   try{r.abort()}catch(e){}
 }
@@ -582,6 +582,17 @@ function setUI(){
   $("labB").textContent=active==="b"?"说完了":"对方说";
   $("labL").textContent=active==="live"?"停止同传":"开始同传";
   $("btnA").disabled=active==="b";$("btnB").disabled=active==="a";
+}
+/* 免费双向同传：用「非拉丁文字」那种语言的系统听写来听，按识别出的文字判断是谁在说 */
+const NONLATIN=new Set(["zh-CN","zh-TW","yue","ja","ko","th","ru","ar"]);
+function freeDual(){return S.autoLang&&NONLATIN.has(S.a)!==NONLATIN.has(S.b)}
+function liveRecLang(){return freeDual()?(NONLATIN.has(S.a)?L(S.a):L(S.b)).sr:L(S.b).sr}
+function liveSide(t){
+  if(!freeDual())return "b";
+  const nl=(t.match(/[\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)||[]).length;
+  const la=(t.match(/[A-Za-z\u00c0-\u024f]/g)||[]).length;
+  const nonLatin=nl>0&&nl*2>=la;          // 汉字等每个字信息量大，权重加倍
+  return nonLatin===NONLATIN.has(S.a)?"a":"b";
 }
 function showPartial(t){$("partial").textContent=t||""}
 function toggle(side){
@@ -598,7 +609,7 @@ function toggle(side){
 }
 function spawn(){
   const r=new SR();rec=r;done=0;sess="";
-  r.lang=(active==="a"?L(S.a):L(S.b)).sr;
+  r.lang=active==="live"?liveRecLang():(active==="a"?L(S.a):L(S.b)).sr;
   r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
   r.onresult=e=>{
     if(r!==rec)return;
@@ -606,7 +617,7 @@ function spawn(){
     for(let i=done;i<e.results.length;i++){
       const res=e.results[i],t=res[0].transcript;
       if(res.isFinal){
-        if(active==="live"){translate(t,"b");done=i+1}else fin+=t;
+        if(active==="live"){translate(t,liveSide(t));done=i+1}else fin+=t;
       }else int+=t;
     }
     if(active==="live"){sess=int;showPartial(int);armSeg()}
@@ -624,7 +635,7 @@ function spawn(){
   try{r.start()}catch(e){rec=null;active=null;setUI();toast("话筒没有启动，请再点一次")}
 }
 function absorb(mode){
-  if(mode==="live"){if(sess.trim())translate(sess,"b")}
+  if(mode==="live"){if(sess.trim())translate(sess,liveSide(sess))}
   else if(mode){talkBuf=join(talkBuf,sess.trim())}
   sess="";
 }
@@ -649,7 +660,7 @@ function armSeg(){ // 同传：停顿超过阈值就断句
   clearTimeout(segTimer);
   segTimer=setTimeout(()=>{
     if(active!=="live"||!rec||!sess.trim())return;
-    const r=rec;rec=null;translate(sess,"b");sess="";showPartial("");
+    const r=rec;rec=null;translate(sess,liveSide(sess));sess="";showPartial("");
     try{r.abort()}catch(e){}
     restartSoon();
   },S.sil*1000);
