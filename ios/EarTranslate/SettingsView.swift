@@ -4,10 +4,26 @@ import AVFoundation
 struct SettingsView: View {
     @EnvironmentObject var vm: Interpreter
     @Environment(\.dismiss) private var dismiss
+    /// 放在「我的」标签页里时为 true（不显示「完成」按钮，多一个「关于」）。
+    var embedded = false
+
+    private var version: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        return b.isEmpty ? v : "\(v)（\(b)）"
+    }
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("语言") {
+                    Picker("我的语言", selection: $vm.mine) {
+                        ForEach(Lang.all) { Text($0.name).tag($0) }
+                    }
+                    Picker("对方语言", selection: $vm.theirs) {
+                        ForEach(Lang.all) { Text($0.name).tag($0) }
+                    }
+                }
                 Section("播报") {
                     Button {
                         Task { await vm.testSpeaker() }
@@ -42,6 +58,14 @@ struct SettingsView: View {
                 } header: { Text("同传收听") } footer: {
                     Text("数值越小出字越快，但长句可能被切断。")
                 }
+                if embedded {
+                    Section("关于") {
+                        LabeledContent("版本", value: version)
+                        Link(destination: URL(string: "https://coolnews.ca")!) { Label("酷天新闻网站", systemImage: "newspaper") }
+                        Link(destination: URL(string: "https://fangyitogo-app.pages.dev/support.html")!) { Label("技术支持", systemImage: "questionmark.circle") }
+                        Link(destination: URL(string: "https://fangyitogo-app.pages.dev/privacy.html")!) { Label("隐私政策", systemImage: "hand.raised") }
+                    }
+                }
                 Section("耳机使用说明") {
                     Label("在 设置 › 蓝牙 中连接耳机，任何蓝牙耳机都可以。", systemImage: "1.circle")
                     Label("App 会优先用耳机麦克风收音，译文从耳机播出。", systemImage: "2.circle")
@@ -52,9 +76,11 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.bg)
-            .navigationTitle("设置")
+            .navigationTitle(embedded ? "我的" : "设置")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar {
+                if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            }
             .tint(Theme.me)
             .preferredColorScheme(.dark)
         }

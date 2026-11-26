@@ -170,19 +170,21 @@ final class Interpreter: ObservableObject {
 
     // MARK: - 翻译
 
-    func submit(_ text: String, side: Side) {
-        let u = Utterance(side: side, source: text)
+    func submit(_ text: String, side: Side, origin: Origin? = nil) {
+        let u = Utterance(side: side, source: text, origin: origin ?? (mode == .live ? .live : .talk))
         items.append(u)
         let job = TranslationJob(id: u.id, text: text)
         pending[u.id] = (side, job)
         queues[side]?.yield(job)
     }
 
-    func translateTyped(_ text: String) {
+    func translateTyped(_ text: String, side: Side = .me) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        submit(t, side: .me)
+        submit(t, side: side, origin: .typed)
     }
+
+    func items(_ origin: Origin) -> [Utterance] { items.filter { $0.origin == origin } }
 
     /// 由 .translationTask 调用：在会话有效期间不断处理该方向的翻译队列。
     func serve(_ session: TranslationSession, side: Side) async {
@@ -214,7 +216,7 @@ final class Interpreter: ObservableObject {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         items[i].translation = text
         let u = items[i]
-        guard autoSpeak else { return }
+        guard autoSpeak, u.origin != .typed else { return }   // 打字翻译不自动播报，点「播放」再读
 
         if u.side == .me && myOutput == .textOnly {
             bigText = u
@@ -259,8 +261,8 @@ final class Interpreter: ObservableObject {
         router.setSpeakerOverride(false)
     }
 
-    func clear() {
-        items.removeAll()
+    func clear(_ origin: Origin? = nil) {
+        if let origin { items.removeAll { $0.origin == origin } } else { items.removeAll() }
     }
 
     var transcript: String {

@@ -6,7 +6,7 @@ struct EarTranslateApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .environmentObject(interpreter)
         }
     }

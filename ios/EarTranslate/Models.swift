@@ -51,10 +51,14 @@ enum MyOutput: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// 记录来自哪个页面：同声翻译、对话翻译、打字翻译。
+enum Origin: String, Sendable { case live, talk, typed }
+
 struct Utterance: Identifiable, Equatable {
     let id = UUID()
     let side: Side
     let source: String
+    var origin: Origin = .live
     var translation: String?
     var failed: String?
 }

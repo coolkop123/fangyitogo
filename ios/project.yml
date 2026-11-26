@@ -28,6 +28,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: 酷天同声
         INFOPLIST_KEY_NSMicrophoneUsageDescription: 需要使用麦克风（包括蓝牙耳机麦克风）收听要翻译的语音。
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: 需要语音识别把说的话转成文字再翻译。
+        INFOPLIST_KEY_NSCameraUsageDescription: 需要使用相机拍下文字进行翻译，照片只在手机上处理。
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
     info:

@@ -15,155 +15,6 @@ enum Theme {
     static func side(_ s: Side) -> Color { s == .me ? me : them }
 }
 
-struct ContentView: View {
-    @EnvironmentObject var vm: Interpreter
-    @State private var showSettings = false
-    @State private var showCaptions = false
-    @State private var typed = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            RouteBanner(router: vm.router)
-            languageBar
-            modePicker
-            Transcript(listener: vm.listener, speaker: vm.speaker)
-            if vm.mode == .live {
-                LiveStage(listener: vm.listener) { showCaptions = true }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 6)
-            } else if vm.listeningSide != nil || vm.listener.problem != nil {
-                ListenStatus(listener: vm.listener)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 6)
-            }
-            controls
-        }
-        .background(Theme.bg.ignoresSafeArea())
-        .foregroundStyle(Theme.ink)
-        .tint(Theme.me)
-        .preferredColorScheme(.dark)
-        .sheet(isPresented: $showSettings) { SettingsView().environmentObject(vm) }
-        .fullScreenCover(item: $vm.bigText) { u in BigTextView(text: u.translation ?? u.source) }
-        .fullScreenCover(isPresented: $showCaptions) { LiveCaptionView(listener: vm.listener).environmentObject(vm) }
-        .alert("提示", isPresented: Binding(get: { vm.errorMessage != nil },
-                                          set: { if !$0 { vm.errorMessage = nil } })) {
-            Button("好") { vm.errorMessage = nil }
-        } message: { Text(vm.errorMessage ?? "") }
-        .onChange(of: vm.mode) { vm.stopListening() }
-        .onReceive(vm.speaker.$problem) { p in
-            if let p { vm.errorMessage = p; vm.speaker.problem = nil }
-        }
-        .translationTask(vm.configMeToThem) { session in await vm.serve(session, side: .me) }
-        .translationTask(vm.configThemToMe) { session in await vm.serve(session, side: .them) }
-        .onAppear { vm.prepare() }
-    }
-
-    // MARK: - 顶部
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Text("酷天同声").font(.system(size: 26, weight: .heavy))
-            Spacer()
-            Menu {
-                Button("复制全部记录", systemImage: "doc.on.doc") { UIPasteboard.general.string = vm.transcript }
-                Button("清空记录", systemImage: "trash", role: .destructive) { vm.clear() }
-            } label: { CircleIcon(system: "ellipsis") }
-            .disabled(vm.items.isEmpty)
-            Button { vm.allSpeaker.toggle() } label: {
-                CircleIcon(system: "speaker.wave.3.fill", on: vm.allSpeaker)
-            }
-            .accessibilityLabel(vm.allSpeaker ? "手机外放：开" : "手机外放：关")
-            Button { showSettings = true } label: { CircleIcon(system: "gearshape") }
-                .accessibilityLabel("设置")
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
-    }
-
-    private var languageBar: some View {
-        HStack(spacing: 8) {
-            LangPicker(title: "我", color: Theme.me, selection: $vm.mine)
-            Button { vm.swapLanguages() } label: { CircleIcon(system: "arrow.left.arrow.right") }
-                .accessibilityLabel("交换语言")
-            LangPicker(title: "对方", color: Theme.them, selection: $vm.theirs)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-    }
-
-    private var modePicker: some View {
-        HStack(spacing: 0) {
-            ForEach(Mode.allCases) { m in
-                Button { vm.mode = m } label: {
-                    Text(m.rawValue)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 38)
-                        .foregroundStyle(vm.mode == m ? Theme.bg : Theme.mute)
-                        .background(Capsule().fill(vm.mode == m ? Theme.ink : .clear))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(4)
-        .background(Capsule().fill(Theme.panel))
-        .overlay(Capsule().strokeBorder(Theme.line))
-        .padding(.horizontal, 14)
-        .padding(.bottom, 4)
-    }
-
-    // MARK: - 底部按钮
-
-    @ViewBuilder private var controls: some View {
-        VStack(spacing: 10) {
-            if vm.mode == .talk {
-                HStack(spacing: 12) {
-                    TalkButton(title: vm.listeningSide == .me ? "说完了" : "我说",
-                               subtitle: "\(vm.mine.name) → \(vm.theirs.name)",
-                               color: Theme.me,
-                               active: vm.listeningSide == .me) { Task { await vm.toggle(.me) } }
-                        .disabled(vm.listeningSide == .them)
-                    TalkButton(title: vm.listeningSide == .them ? "说完了" : "对方说",
-                               subtitle: "\(vm.theirs.name) → \(vm.mine.name)",
-                               color: Theme.them,
-                               active: vm.listeningSide == .them) { Task { await vm.toggle(.them) } }
-                        .disabled(vm.listeningSide == .me)
-                }
-            } else {
-                TalkButton(title: vm.listeningSide == nil ? "开始同传" : "停止同传",
-                           subtitle: "自动识别 \(vm.mine.name) ⇄ \(vm.theirs.name)，\(vm.allSpeaker ? "外放" : "耳机里播")译文",
-                           color: Theme.ink,
-                           active: vm.listeningSide != nil) { Task { await vm.toggle(.them) } }
-            }
-            HStack(spacing: 8) {
-                TextField("", text: $typed, prompt: Text("也可以打字翻译…").foregroundStyle(Theme.mute))
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 46)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line))
-                    .submitLabel(.send)
-                    .onSubmit(sendTyped)
-                Button(action: sendTyped) {
-                    Text("翻译").font(.body.weight(.semibold))
-                        .padding(.horizontal, 16).frame(minHeight: 46)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
-                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-    }
-
-    private func sendTyped() {
-        vm.translateTyped(typed)
-        typed = ""
-    }
-}
-
 // MARK: - 组件
 
 struct CircleIcon: View {
@@ -244,22 +95,24 @@ struct Transcript: View {
     @EnvironmentObject var vm: Interpreter
     @ObservedObject var listener: SpeechListener
     @ObservedObject var speaker: Speaker
+    let origin: Origin
+    private var list: [Utterance] { vm.items(origin) }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    if vm.items.isEmpty && listener.partial.isEmpty {
-                        EmptyHint(live: vm.mode == .live).padding(.top, 30)
+                    if list.isEmpty && (origin != .talk || listener.partial.isEmpty) {
+                        EmptyHint(origin: origin).padding(.top, origin == .typed ? 20 : 30)
                     }
-                    ForEach(vm.items) { u in
+                    ForEach(list) { u in
                         Bubble(u: u, speaking: speaker.speakingID == u.id,
                                onPlay: { Task { await vm.speak(u) } },
                                onBig: { vm.bigText = u })
                             .id(u.id)
                     }
                     // 面对面：正在说的话显示在气泡下面（同传的实时文字在下方字幕区）
-                    if vm.mode == .talk, !listener.partial.isEmpty {
+                    if origin == .talk, !listener.partial.isEmpty {
                         Text(listener.partial)
                             .italic()
                             .foregroundStyle(Theme.mute)
@@ -271,20 +124,20 @@ struct Transcript: View {
                 .padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: vm.items.count) {
-                if let last = vm.items.last?.id {
+            .onChange(of: list.count) {
+                if let last = list.last?.id {
                     withAnimation { proxy.scrollTo(last, anchor: .bottom) }
                 }
             }
             .onChange(of: listener.partial) {
-                if vm.mode == .talk { proxy.scrollTo("partial", anchor: .bottom) }
+                if origin == .talk { proxy.scrollTo("partial", anchor: .bottom) }
             }
         }
     }
 }
 
 struct EmptyHint: View {
-    let live: Bool
+    let origin: Origin
     var body: some View {
         VStack(spacing: 12) {
             ZStack(alignment: .topTrailing) {
@@ -294,9 +147,10 @@ struct EmptyHint: View {
                     .offset(x: 22, y: -12)
             }
             .padding(.bottom, 6)
-            Text("连好蓝牙耳机，按下方按钮说话").font(.headline)
-            Text(live ? "同传：中文、英文直接说，不用切换。\n每句说完稍微停顿，屏幕上会显示翻译，并在耳机里播报。"
-                      : "面对面：轮到谁说就按谁的按钮，说完再按一次。")
+            Text(origin == .typed ? "在上面输入文字，点「翻译」" : "连好蓝牙耳机，按下方按钮说话").font(.headline)
+            Text(origin == .live ? "同传：中文、英文直接说，不用切换。\n每句说完稍微停顿，屏幕上会显示翻译，并在耳机里播报。"
+                 : origin == .talk ? "对话：轮到谁说就按谁的按钮，说完再按一次。"
+                 : "翻译记录会显示在这里，点「播放」可以朗读译文。")
                 .font(.subheadline).foregroundStyle(Theme.mute).multilineTextAlignment(.center)
         }
         .padding()
@@ -381,9 +235,9 @@ struct LiveStage: View {
     let onFull: () -> Void
 
     private var status: String {
-        if vm.listeningSide == nil { return vm.items.isEmpty ? "点下方「开始同传」" : "已停止" }
+        if vm.listeningSide == nil { return vm.items(.live).isEmpty ? "点下方「开始同传」" : "已停止" }
         if !listener.partial.isEmpty { return "🎙 正在识别…" }
-        if let last = vm.items.last, last.translation == nil, last.failed == nil { return "翻译中…" }
+        if let last = vm.items(.live).last, last.translation == nil, last.failed == nil { return "翻译中…" }
         return "正在听…"
     }
 
@@ -404,7 +258,7 @@ struct LiveStage: View {
             if !listener.partial.isEmpty {
                 LivePartials(names: [vm.mine.name, vm.theirs.name], texts: listener.partials, big: false)
             }
-            if let u = vm.items.last {
+            if let u = vm.items(.live).last {
                 Text(u.source).font(.subheadline).foregroundStyle(Theme.mute).lineLimit(2)
                 Text(u.translation ?? u.failed ?? "翻译中…")
                     .font(.system(size: 26, weight: .bold))
@@ -422,7 +276,7 @@ struct LiveStage: View {
         .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(Theme.panel))
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.line))
-        .animation(.easeOut(duration: 0.2), value: vm.items.last?.translation)
+        .animation(.easeOut(duration: 0.2), value: vm.items(.live).last?.translation)
     }
 }
 
@@ -497,7 +351,7 @@ struct LiveCaptionView: View {
     var body: some View {
         VStack(spacing: 18) {
             Spacer()
-            if let u = vm.items.last {
+            if let u = vm.items(.live).last {
                 Text(u.source).font(.title3).foregroundStyle(Theme.mute).multilineTextAlignment(.center)
                 Text(u.translation ?? "翻译中…")
                     .font(.system(size: 46, weight: .bold))
@@ -525,7 +379,7 @@ struct LiveCaptionView: View {
         .background(Theme.bg.ignoresSafeArea())
         .foregroundStyle(Theme.ink)
         .preferredColorScheme(.dark)
-        .animation(.default, value: vm.items.last?.translation)
+        .animation(.default, value: vm.items(.live).last?.translation)
     }
 }
 
