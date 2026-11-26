@@ -160,7 +160,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.3</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.4</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -421,6 +421,9 @@ const synth=window.speechSynthesis;let voices=[];let unlocked=false;let speaking
 function loadVoices(){if(synth)voices=synth.getVoices()}
 if(synth){loadVoices();synth.onvoiceschanged=loadVoices}
 const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+// App 内置浏览器（微信、Facebook、Instagram 等）通常不支持系统语音识别
+const INAPP=/MicroMessenger|FBAN|FBAV|Instagram|Line\/|Weibo|QQ\/|DingTalk|Lark|Feishu|; wv\)/i.test(navigator.userAgent)||(IOS&&!/Safari\//.test(navigator.userAgent)&&!navigator.standalone);
+let srBroken=false;   // 系统语音识别在这台设备上报错过
 function unlockTTS(){ // iOS 必须在用户点击里先说一次，之后才允许自动播报
   unlockAudio();
   if(!synth||unlocked)return;unlocked=true;
@@ -575,8 +578,10 @@ function showPartial(t){$("partial").textContent=t||""}
 function toggle(side){
   unlockTTS();
   if(active){stopListen();return}
-  if(side==="live"&&S.autoLang&&S.oaKey){startAuto();return}
-  if(!SR){notice("这个浏览器不支持语音识别。iPhone 请用 Safari，安卓请用 Chrome；现在仍可以打字翻译。");return}
+  if(side==="live"&&S.autoLang&&S.oaKey){startAuto("live");return}
+  const canSTT=!!S.oaKey&&!!(window.AudioContext||window.webkitAudioContext)&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  if(canSTT&&(!SR||srBroken||INAPP)){startAuto(side);return}   // 系统识别用不了：改用 OpenAI 识别
+  if(!SR){notice(noSRMsg());return}
   if(synth)synth.cancel();
   active=side;stopping=null;talkBuf="";sess="";restarts=[];setSession("auto");
   setUI();wake(true);spawn();
@@ -599,8 +604,11 @@ function spawn(){
   };
   r.onerror=e=>{
     if(r!==rec)return;
-    const m={"not-allowed":"麦克风或语音识别未获允许。iPhone 请在 设置 › 通用 › 键盘 中打开「启用听写」，并允许网站使用麦克风。","service-not-allowed":"语音识别服务不可用。iPhone 请打开「启用听写」；安卓 Chrome 需要能连上 Google 服务。","network":"语音识别需要联网（安卓 Chrome 需要能连上 Google 服务）。","language-not-supported":"这个浏览器不支持该语言的语音识别。","audio-capture":"找不到麦克风，请检查耳机连接。"}[e.error];
-    if(m){notice(m);active=null;setUI()}
+    const m={"not-allowed":"麦克风或语音识别未获允许。iPhone 请在 设置 › 通用 › 键盘 中打开「启用听写」，并允许网站使用麦克风。","service-not-allowed":(INAPP?"当前是在 App 内置浏览器里打开的，系统语音识别用不了。请点右上角「···」选择「在 Safari 中打开」。":"系统语音识别用不了。iPhone 请确认已打开「启用听写」并用 Safari 打开；安卓 Chrome 需要能连上 Google 服务。"),"network":"语音识别需要联网（安卓 Chrome 需要能连上 Google 服务）。","language-not-supported":"这个浏览器不支持该语言的语音识别。","audio-capture":"找不到麦克风，请检查耳机连接。"}[e.error];
+    if(!m)return;
+    active=null;setUI();
+    if(e.error!=="audio-capture"&&S.oaKey){srBroken=true;notice("");toast("系统语音识别用不了，已改用 OpenAI 识别。请再点一次按钮");return}
+    notice(m+(e.error!=="audio-capture"?" 也可以在设置里填 OpenAI API Key，改用 OpenAI 识别（不需要听写）。":""));
   };
   r.onend=()=>ended(r);
   try{r.start()}catch(e){rec=null;active=null;setUI();toast("话筒没有启动，请再点一次")}
@@ -638,26 +646,34 @@ function armSeg(){ // 同传：停顿超过阈值就断句
 }
 /* ---------- 同传：自动识别语言（录音 → OpenAI 转写 → 判断方向） ---------- */
 let au=null,sttChain=Promise.resolve();
-async function startAuto(){
+function noSRMsg(){return INAPP?"当前是在 App 内置浏览器里打开的，系统语音识别用不了。请点右上角「···」选择「在 Safari 中打开」，或在设置里填 OpenAI API Key 改用 OpenAI 识别。":"这个浏览器不支持系统语音识别。iPhone 请用 Safari，安卓请用 Chrome；也可以在设置里填 OpenAI API Key 改用 OpenAI 识别。"}
+async function startAuto(mode){
   const Ctx=window.AudioContext||window.webkitAudioContext;
   if(!Ctx||!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){notice("这个浏览器不支持自动识别语言，请在设置里关掉「自动识别双方语言」。");return}
   const ctx=new Ctx();                         // 必须在点击里创建
   if(synth)synth.cancel();
-  active="live";stopping=null;setUI();wake(true);setSession("play-and-record");
-  showPartial("正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）");
+  active=mode;stopping=null;setUI();wake(true);setSession("play-and-record");
+  showPartial(mode==="live"?"正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）":"🎙 正在录音，说完再点一次按钮");
   let stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
   catch(e){try{ctx.close()}catch(_){}active=null;setUI();wake(false);showPartial("");notice("没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。");return}
-  if(active!=="live"){stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
+  if(active!==mode){stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
   try{await ctx.resume()}catch(e){}
   const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(4096,1,1);
-  au={ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005};
+  au={mode,ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005,len:0,shown:0};
   proc.onaudioprocess=e=>onAudio(e.inputBuffer.getChannelData(0));
   src.connect(proc);proc.connect(ctx.destination);   // iOS 要连到输出才会运行；这里输出的是静音
 }
 function onAudio(d){
   if(!au)return;
   const ms=d.length/au.ctx.sampleRate*1000;
+  if(au.mode!=="live"){            // 面对面：一直录，到点按钮为止（最长 60 秒）
+    au.chunks.push(new Float32Array(d));au.len+=ms;
+    const sec=Math.floor(au.len/1000);
+    if(sec!==au.shown){au.shown=sec;showPartial("🎙 正在录音 "+sec+" 秒，说完再点一次按钮")}
+    if(au.len>60000)stopListen();
+    return;
+  }
   if(ttsBusy()){if(au.speaking)endSeg(false);au.pre=[];return}   // 播报时不收，防止回声
   let sum=0;for(let i=0;i<d.length;i++)sum+=d[i]*d[i];
   const rms=Math.sqrt(sum/d.length),buf=new Float32Array(d);
@@ -698,7 +714,7 @@ function encodeWav(chunks,rate){
   return new Blob([v.buffer],{type:"audio/wav"});
 }
 const JUNK=/^(谢谢观看|謝謝觀看|谢谢收看|字幕由.*|請不吝點贊.*|请不吝点赞.*|明镜与点点栏目|thank you( so much)? for watching[.!]?|thanks for watching[.!]?|you|bye[.!]?)$/i;
-async function transcribe(wav){
+async function transcribe(wav,forced){
   const fd=new FormData();fd.append("file",wav,"speech.wav");fd.append("model",S.sttModel||"gpt-transcribe");
   const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),20000);
   if(au&&!au.speaking)showPartial("识别中…");
@@ -708,10 +724,10 @@ async function transcribe(wav){
     const j=await r.json(),text=(j.text||"").trim();
     if(!text||JUNK.test(text.replace(/[。.!！\s]+$/,"")))return null;
     const code=(j.languages&&j.languages[0]&&j.languages[0].code)||j.language||"";
-    return {text,side:sideFor(code,text)};
+    return {text,side:forced||sideFor(code,text)};
   }catch(e){
     const why=e.name==="AbortError"?"网络超时":e.message;
-    if(e.fatal&&au){active=null;stopAuto(false);notice("自动识别语言不可用（"+why+"）。可以在设置里关掉「自动识别双方语言」，改用普通同传。")}
+    if(e.fatal){if(au){active=null;stopAuto(false)}notice("OpenAI 识别不可用（"+why+"）。请检查设置里的 API Key；也可以关掉「自动识别双方语言」改用系统识别。")}
     else toast("这一句没识别出来（"+why+"）");
     return null;
   }finally{clearTimeout(t);if(au)showPartial(au.speaking?"🎙 正在说话…":"正在听…")}
@@ -733,11 +749,14 @@ function sideFor(code,text){
 }
 function stopAuto(flush){
   const a=au;if(!a)return;
-  if(flush&&a.speaking)endSeg(true);
+  if(flush&&a.mode==="live"&&a.speaking)endSeg(true);
+  let talk=null;
+  if(flush&&a.mode!=="live"&&a.len>=500)talk=encodeWav(a.chunks,a.ctx.sampleRate);
   au=null;
   try{a.proc.onaudioprocess=null;a.proc.disconnect();a.src.disconnect()}catch(e){}
   a.stream.getTracks().forEach(t=>t.stop());try{a.ctx.close()}catch(e){}
-  micOffAt=Date.now();setSession("playback");showPartial("");setUI();wake(false);
+  micOffAt=Date.now();setSession("playback");showPartial(talk?"识别中…":"");setUI();wake(false);
+  if(talk){const p=transcribe(talk,a.mode);sttChain=sttChain.then(()=>p).then(r=>{showPartial("");if(r)translate(r.text,r.side)}).catch(()=>{})}
 }
 function stopListen(silent){
   if(!active)return;
@@ -827,7 +846,8 @@ $("testVoice").onclick=()=>{unlockTTS();speak({out:L(S.b).id.startsWith("zh")?"�
 
 /* ---------- 启动 ---------- */
 syncLangs();setMode(S.mode);setUI();syncOut();
-if(!SR)notice("这个浏览器不支持语音识别。iPhone 请用 Safari，安卓请用 Chrome；现在仍可以打字翻译。");
+if(INAPP&&!S.oaKey)notice("当前是在 App 内置浏览器里打开的，语音识别可能用不了。请点右上角「···」选择「在 Safari 中打开」。");
+else if(!SR&&!S.oaKey)notice(noSRMsg());
 else if(!window.isSecureContext)notice("需要通过 https 网址打开才能使用麦克风。");
 if("serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
