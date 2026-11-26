@@ -51,6 +51,15 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    Picker("收音灵敏度", selection: $vm.sensitivity) {
+                        Text("标准").tag(1.0)
+                        Text("高（推荐）").tag(4.0)
+                        Text("很高").tag(10.0)
+                    }
+                } header: { Text("收音") } footer: {
+                    Text("小声说话识别不出来时调高。周围很吵时，灵敏度太高可能把旁边的人声也识别进来。")
+                }
+                Section {
                     VStack(alignment: .leading) {
                         Text("停顿 \(vm.silenceTimeout, specifier: "%.1f") 秒算一句")
                         Slider(value: $vm.silenceTimeout, in: 0.6...2.5, step: 0.1)

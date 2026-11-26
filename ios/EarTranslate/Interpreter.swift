@@ -22,6 +22,8 @@ final class Interpreter: ObservableObject {
     /// 所有译文都用手机扬声器外放（不戴耳机、或想让周围的人都听到时）。
     @Published var allSpeaker: Bool { didSet { defaults.set(allSpeaker, forKey: "allSpeaker") } }
     @Published var speechRate: Float { didSet { speaker.rate = speechRate; defaults.set(speechRate, forKey: "rate") } }
+    /// 收音灵敏度：1 标准 / 4 高 / 10 很高
+    @Published var sensitivity: Double { didSet { listener.setSensitivity(sensitivity); defaults.set(sensitivity, forKey: "sensitivity") } }
     @Published var silenceTimeout: Double { didSet { listener.silenceTimeout = silenceTimeout; defaults.set(silenceTimeout, forKey: "silence") } }
 
     // 两个方向各一个翻译会话（由视图上的 .translationTask 驱动）
@@ -47,8 +49,10 @@ final class Interpreter: ObservableObject {
         allSpeaker = d.bool(forKey: "allSpeaker")
         speechRate = d.object(forKey: "rate") as? Float ?? AVSpeechUtteranceDefaultSpeechRate
         silenceTimeout = d.object(forKey: "silence") as? Double ?? 1.0
+        sensitivity = d.object(forKey: "sensitivity") as? Double ?? 4
         speaker.rate = speechRate
         listener.silenceTimeout = silenceTimeout
+        listener.setSensitivity(sensitivity)
         makeConfigs()
     }
 

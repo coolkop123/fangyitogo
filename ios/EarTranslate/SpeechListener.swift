@@ -21,16 +21,42 @@ struct Candidate: Sendable {
 }
 
 /// 把音频线程收到的缓冲区同时交给所有识别请求（双语同传时有两个）。
+/// 小声说话时自动放大（最多 maxGain 倍），大声时不放大；太安静的背景噪音不放大。
 private final class BufferSink: @unchecked Sendable {
     private let lock = NSLock()
     private var requests: [SFSpeechAudioBufferRecognitionRequest] = []
     private var muted = false
+    private var maxGain: Float = 4
+    private var gain: Float = 1
     func set(_ r: [SFSpeechAudioBufferRecognitionRequest]) { lock.lock(); requests = r; lock.unlock() }
     func setMuted(_ m: Bool) { lock.lock(); muted = m; lock.unlock() }
+    func setMaxGain(_ g: Float) { lock.lock(); maxGain = max(1, g); lock.unlock() }
     func append(_ b: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
-        guard !muted else { return }
-        for r in requests { r.append(b) }
+        guard !muted, !requests.isEmpty else { return }
+        let out = boost(b) ?? b
+        for r in requests { r.append(out) }
+    }
+
+    private func boost(_ b: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard maxGain > 1.01, let src = b.floatChannelData, b.frameLength > 0,
+              let copy = AVAudioPCMBuffer(pcmFormat: b.format, frameCapacity: b.frameLength),
+              let dst = copy.floatChannelData else { return nil }
+        let n = Int(b.frameLength)
+        var sum: Float = 0
+        for i in 0..<n { sum += src[0][i] * src[0][i] }
+        let rms = (sum / Float(n)).squareRoot()
+        // 目标音量约 0.08；低于噪声门（0.002）当作安静，不放大
+        let want: Float = rms < 0.002 ? 1 : min(maxGain, max(1, 0.08 / rms))
+        gain = want < gain ? gain * 0.6 + want * 0.4 : gain * 0.9 + want * 0.1   // 变小快、变大慢，避免忽大忽小
+        copy.frameLength = b.frameLength
+        for ch in 0..<Int(b.format.channelCount) {
+            for i in 0..<n {
+                let x = src[ch][i] * gain
+                dst[ch][i] = x > 0.95 || x < -0.95 ? tanh(x) : x                // 太响时柔和压住，避免爆音
+            }
+        }
+        return copy
     }
 }
 
@@ -194,6 +220,8 @@ final class SpeechListener: ObservableObject {
     }
 
     func setMuted(_ muted: Bool) { sink.setMuted(muted) }
+    /// 收音灵敏度：小声说话时最多放大几倍（1 = 不放大）。
+    func setSensitivity(_ maxGain: Double) { sink.setMaxGain(Float(maxGain)) }
 
     func stop(flush: Bool) {
         guard isRunning else { return }
