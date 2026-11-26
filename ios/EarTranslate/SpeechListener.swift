@@ -60,18 +60,30 @@ private final class BufferSink: @unchecked Sendable {
     }
 }
 
-/// 在音频线程上算麦克风音量，大约每 0.1 秒交给界面一次。
+/// 在音频线程上算麦克风音量，大约每 0.1 秒交给界面一次；同时记下最近一次收到声音 / 有人说话的时间（给看门狗用）。
 private final class LevelMeter: @unchecked Sendable {
+    private let lock = NSLock()
     private var count = 0
+    private var lastBuffer: TimeInterval = 0
+    private var lastLoud: TimeInterval = 0
     var onLevel: (@Sendable (Float) -> Void)?
     func feed(_ b: AVAudioPCMBuffer) {
-        count += 1
-        guard count % 4 == 0, let ch = b.floatChannelData?[0], b.frameLength > 0 else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock(); lastBuffer = now; count += 1; let c = count; lock.unlock()
+        guard c % 4 == 0, let ch = b.floatChannelData?[0], b.frameLength > 0 else { return }
         let n = Int(b.frameLength)
         var sum: Float = 0
         for i in 0..<n { sum += ch[i] * ch[i] }
         let rms = (sum / Float(n)).squareRoot()
+        if rms > 0.01 { lock.lock(); lastLoud = now; lock.unlock() }
         onLevel?(min(1, rms * 8))
+    }
+    func reset() { lock.lock(); lastBuffer = ProcessInfo.processInfo.systemUptime; lastLoud = 0; lock.unlock() }
+    /// (距上次收到声音的秒数, 距上次有人说话的秒数)
+    func ages() -> (buffer: TimeInterval, loud: TimeInterval) {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock(); defer { lock.unlock() }
+        return (now - lastBuffer, lastLoud == 0 ? .infinity : now - lastLoud)
     }
 }
 
@@ -109,6 +121,12 @@ final class SpeechListener: ObservableObject {
     private var committed = ""          // 面对面：已完成的句子
     private var silenceTimer: Timer?
     private var finishTimer: Timer?
+    private var watchdog: Timer?
+    private var configObserver: NSObjectProtocol?
+    private var segmentStarted: TimeInterval = 0     // 这一段识别开始的时间
+    private var lastResult: TimeInterval = 0         // 最近一次收到识别文字的时间
+    private var finishingSince: TimeInterval = 0
+    private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     var partial: String { partials.filter { !$0.isEmpty }.joined(separator: "\n") }
 
@@ -153,7 +171,80 @@ final class SpeechListener: ObservableObject {
             throw ListenerError.micBusy(Self.diagnose(lastError))
         }
         isRunning = true
+        meter.reset()
         beginRequests()
+        startWatching()
+    }
+
+    // MARK: - 自动恢复
+
+    /// 外放 / 耳机切换等音频变化会让系统悄悄停掉录音引擎：收到通知就重启；
+    /// 另外每秒检查一次，发现没声音进来、识别卡住时自动恢复，让同传一直连续工作。
+    private func startWatching() {
+        if configObserver == nil {
+            configObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
+            ) { [weak self] note in
+                let source = (note.object as AnyObject?).map(ObjectIdentifier.init)
+                Task { @MainActor in
+                    guard let self, source == nil || source == ObjectIdentifier(self.engine) else { return }
+                    self.restartEngine()
+                }
+            }
+        }
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkHealth() }
+        }
+    }
+
+    private func stopWatching() {
+        watchdog?.invalidate(); watchdog = nil
+        if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
+    }
+
+    private func checkHealth() {
+        guard isRunning else { return }
+        let ages = meter.ages()
+        // 1. 2 秒多没有任何声音进来：录音引擎停了，重启
+        if ages.buffer > 2.5 || !engine.isRunning {
+            level = 0
+            restartEngine()
+            return
+        }
+        // 2. 收尾等太久（最终结果没回来）：直接提交
+        if finishing {
+            if now - finishingSince > 3 { completeSegment() }
+            return
+        }
+        let hasText = texts.contains { !$0.isEmpty }
+        if hasText {
+            // 3. 有文字但停顿计时器没触发：手动收尾
+            if now - lastResult > silenceTimeout + 2 { startFinishing() }
+        } else if (ages.loud < 2 && now - segmentStarted > 6) || now - segmentStarted > 50 {
+            // 4. 一直有人说话却 6 秒没有任何识别文字，或空等快到 1 分钟上限：换新的识别任务
+            endRequests()
+            beginRequests()
+        }
+    }
+
+    private var lastRestart: TimeInterval = 0
+    private func restartEngine() {
+        guard isRunning, now - lastRestart > 0.8 else { return }   // 防止短时间内反复重启
+        lastRestart = now
+        var ok = false
+        for attempt in 0..<4 {
+            Self.prepareSession(attempt: attempt)
+            if (try? startEngine()) != nil { ok = true; break }
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        meter.reset()
+        guard ok else { problem = "麦克风被中断，正在重试…"; return }
+        if problem == "麦克风被中断，正在重试…" { problem = nil }
+        // 麦克风格式可能变了：把已听到的这段收尾，再开新的识别任务
+        if finishing { return }
+        if texts.contains(where: { !$0.isEmpty }) { startFinishing() } else { endRequests(); beginRequests() }
     }
 
     /// 每次新建一个录音引擎（避免沿用旧的麦克风格式），确认麦克风可用后再启动。
@@ -226,6 +317,7 @@ final class SpeechListener: ObservableObject {
     func stop(flush: Bool) {
         guard isRunning else { return }
         isRunning = false
+        stopWatching()
         let lastTexts = texts
         endRequests()
         engine.stop()
@@ -251,6 +343,8 @@ final class SpeechListener: ObservableObject {
         generation += 1
         let gen = generation
         finishing = false
+        segmentStarted = now
+        lastResult = now
         let n = recognizers.count
         texts = Array(repeating: "", count: n)
         confs = Array(repeating: 0, count: n)
@@ -314,6 +408,7 @@ final class SpeechListener: ObservableObject {
         }
         if let t = text, !t.isEmpty { failStreak[i] = 0; if !failStreak.contains(where: { $0 >= 2 }) { problem = nil } }
         if let text, !text.isEmpty {
+            lastResult = now
             texts[i] = text
             if segmentOnSilence { partials = texts } else { partials = [join(committed, text)] }
             if !finishing { armSilenceTimer() }
@@ -361,6 +456,7 @@ final class SpeechListener: ObservableObject {
         guard isRunning, segmentOnSilence, !finishing else { return }
         guard texts.contains(where: { !$0.isEmpty }) else { return }
         finishing = true
+        finishingSince = now
         silenceTimer?.invalidate()
         sink.set([])                          // 后面的声音不再算进这一段
         requests.forEach { $0.endAudio() }

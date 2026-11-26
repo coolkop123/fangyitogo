@@ -245,35 +245,49 @@ struct VideoPlayerScreen: View {
     let item: NewsItem
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
+    @State private var showInfo = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Button { dismiss() } label: { CircleIcon(system: "xmark") }
-                Spacer()
-                ShareLink(item: item.shareURL, subject: Text(item.title), message: Text(item.title)) {
-                    CircleIcon(system: "square.and.arrow.up")
+        ZStack {
+            Color.black.ignoresSafeArea()
+            // 全屏播放：竖屏视频铺满屏幕，横屏视频居中（转动手机可横屏看）
+            VideoPlayer(player: player)
+                .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button { dismiss() } label: { CircleIcon(system: "xmark") }
+                    Spacer()
+                    ShareLink(item: item.shareURL, subject: Text(item.title), message: Text(item.title)) {
+                        CircleIcon(system: "square.and.arrow.up")
+                    }
+                }
+                if showInfo {
+                    Text(item.title).font(.headline).lineLimit(2)
+                    Text("\(item.author) · \(NewsTime.full(item.time))").font(.caption).foregroundStyle(.white.opacity(0.75))
                 }
             }
-            Spacer(minLength: 0)
-            VideoPlayer(player: player)
-                .aspectRatio(16 / 9, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            Text(item.title).font(.title3.weight(.bold))
-            if !item.sub.isEmpty { Text(item.sub).font(.subheadline).foregroundStyle(Theme.mute) }
-            Text("\(item.author) · \(NewsTime.full(item.time))").font(.footnote).foregroundStyle(Theme.mute)
-            Spacer(minLength: 0)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+            .foregroundStyle(.white)
+            .background(
+                LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            )
+            .animation(.easeInOut, value: showInfo)
         }
-        .padding(18)
-        .background(Theme.bg.ignoresSafeArea())
-        .foregroundStyle(Theme.ink)
+        .statusBarHidden()
         .onAppear {
             guard let url = item.video else { return }
             // 播新闻视频时用普通播放模式（不录音），声音走扬声器或耳机
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
             let p = AVPlayer(url: url)
             player = p
             p.play()
+            Task { try? await Task.sleep(for: .seconds(4)); showInfo = false }   // 4 秒后只留关闭和分享按钮
         }
         .onDisappear {
             player?.pause()
