@@ -3,9 +3,12 @@ import Speech
 
 enum ListenerError: LocalizedError {
     case unavailable(String)
+    case micBusy(Int)
     var errorDescription: String? {
         switch self {
         case .unavailable(let id): return "此设备暂不支持「\(id)」的语音识别，或识别服务不可用。"
+        case .micBusy(let code):
+            return "麦克风暂时打不开（代码 \(code)）。可能正被其他 App（电话、视频、录音）占用，请关掉它们后再点一次；如果还不行，把酷天同声从后台划掉重新打开。"
         }
     }
 }
@@ -63,7 +66,7 @@ final class SpeechListener: ObservableObject {
     var onSegment: (([Candidate]) -> Void)?
     var silenceTimeout: TimeInterval = 1.0
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let sink = BufferSink()
     private let meter = LevelMeter()
     private var dead: [Bool] = []          // 这一段里已经出错的识别器
@@ -105,13 +108,51 @@ final class SpeechListener: ObservableObject {
         problem = nil
         meter.onLevel = { [weak self] v in Task { @MainActor in self?.level = v } }
 
-        let input = engine.inputNode
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0), block: Self.makeTap(sink, meter))
-        engine.prepare()
-        try engine.start()
+        do {
+            try startEngine()
+        } catch {
+            // 第一次失败（常见于刚播完视频、或音频还在「只播放」状态）：重新激活录音模式再试一次
+            Self.resetSession()
+            do { try startEngine() } catch {
+                throw ListenerError.micBusy((error as NSError).code)
+            }
+        }
         isRunning = true
         beginRequests()
+    }
+
+    /// 每次新建一个录音引擎（避免沿用旧的麦克风格式），确认麦克风可用后再启动。
+    private func startEngine() throws {
+        Self.ensureRecordSession()
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw NSError(domain: "EarTranslate.mic", code: 1852797029)
+        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.makeTap(sink, meter))
+        engine.prepare()
+        try engine.start()
+    }
+
+    /// 确保音频处在「录音 + 播放」模式并已激活。
+    static func ensureRecordSession() {
+        let s = AVAudioSession.sharedInstance()
+        if s.category != .playAndRecord {
+            try? s.setCategory(.playAndRecord, mode: .default,
+                               options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .duckOthers])
+        }
+        try? s.setActive(true)
+    }
+
+    static func resetSession() {
+        let s = AVAudioSession.sharedInstance()
+        try? s.setActive(false, options: .notifyOthersOnDeactivation)
+        try? s.setCategory(.playAndRecord, mode: .default,
+                           options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .duckOthers])
+        try? s.setActive(true)
     }
 
     /// 稍等让最后几个字识别出来，再停止并提交。
