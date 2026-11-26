@@ -1,0 +1,54 @@
+name: 编译 iPhone 安装包
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: 编译（不签名，安装时由 Sideloadly 用你的 Apple ID 签名）
+        working-directory: ios
+        run: |
+          xcodebuild -version
+          xcodebuild -project EarTranslate.xcodeproj -target EarTranslate \
+            -configuration Release -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Release-iphoneos/EarTranslate.app
+
+      - name: 打包 IPA
+        run: |
+          mkdir -p Payload
+          cp -R ios/build/Release-iphoneos/EarTranslate.app Payload/
+          zip -qry SuiShenTongChuan.ipa Payload
+          ls -lh SuiShenTongChuan.ipa
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuiShenTongChuan-ipa
+          path: SuiShenTongChuan.ipa
+          retention-days: 30
+
+      - name: 上传编译日志（失败时排查用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ios/build.log
+          if-no-files-found: ignore

@@ -1,0 +1,53 @@
+import SwiftUI
+import AVFoundation
+
+struct SettingsView: View {
+    @EnvironmentObject var vm: Interpreter
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("播报") {
+                    Toggle("译文自动播报", isOn: $vm.autoSpeak)
+                    Toggle(isOn: $vm.allSpeaker) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("全部用手机外放")
+                            Text("连着耳机也从手机扬声器大声播放；播放时暂停收音，防止回声")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Picker("我说的译文", selection: $vm.myOutput) {
+                        ForEach(MyOutput.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .disabled(vm.allSpeaker)
+                    VStack(alignment: .leading) {
+                        Text("语速")
+                        Slider(value: $vm.speechRate, in: 0.35...0.62) {
+                            Text("语速")
+                        } minimumValueLabel: { Image(systemName: "tortoise") }
+                          maximumValueLabel: { Image(systemName: "hare") }
+                    }
+                }
+                Section {
+                    VStack(alignment: .leading) {
+                        Text("停顿 \(vm.silenceTimeout, specifier: "%.1f") 秒算一句")
+                        Slider(value: $vm.silenceTimeout, in: 0.6...2.5, step: 0.1)
+                    }
+                } header: { Text("同传收听") } footer: {
+                    Text("数值越小出字越快，但长句可能被切断。")
+                }
+                Section("耳机使用说明") {
+                    Label("在 设置 › 蓝牙 中连接耳机，任何蓝牙耳机都可以。", systemImage: "1.circle")
+                    Label("App 会优先用耳机麦克风收音，译文从耳机播出。", systemImage: "2.circle")
+                    Label("面对面时，我说的译文默认从手机外放给对方听；对方说的译文只在我的耳机里播。", systemImage: "3.circle")
+                    Label("想要更自然的声音：设置 › 辅助功能 › 朗读内容 › 声音，下载「增强」或「高级」语音。", systemImage: "4.circle")
+                    Label("第一次用某种语言时，系统会提示下载离线翻译包，之后不联网也能翻译。", systemImage: "5.circle")
+                }
+            }
+            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
+    }
+}

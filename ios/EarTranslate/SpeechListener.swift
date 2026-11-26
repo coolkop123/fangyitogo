@@ -1,0 +1,255 @@
+import AVFoundation
+import Speech
+
+enum ListenerError: LocalizedError {
+    case unavailable(String)
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let id): return "此设备暂不支持「\(id)」的语音识别，或识别服务不可用。"
+        }
+    }
+}
+
+/// 一段话在某种语言下的识别结果。
+struct Candidate: Sendable {
+    let index: Int          // 对应 start(locales:) 里的第几种语言
+    let text: String
+    let confidence: Float   // 0~1，只有识别完成（final）时才有值
+}
+
+/// 把音频线程收到的缓冲区同时交给所有识别请求（双语同传时有两个）。
+private final class BufferSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [SFSpeechAudioBufferRecognitionRequest] = []
+    private var muted = false
+    func set(_ r: [SFSpeechAudioBufferRecognitionRequest]) { lock.lock(); requests = r; lock.unlock() }
+    func setMuted(_ m: Bool) { lock.lock(); muted = m; lock.unlock() }
+    func append(_ b: AVAudioPCMBuffer) {
+        lock.lock(); defer { lock.unlock() }
+        guard !muted else { return }
+        for r in requests { r.append(b) }
+    }
+}
+
+/// 连续语音识别。
+/// - 面对面：一种语言，一直累积到手动停止。
+/// - 同传：同时用两种语言识别同一路声音，停顿后比较两边的把握度，交给调用方选择。
+@MainActor
+final class SpeechListener: ObservableObject {
+    /// 每种语言当前的实时识别文字（同传时屏幕上同时显示）。
+    @Published private(set) var partials: [String] = []
+    @Published private(set) var isRunning = false
+
+    /// 一段话结束：给出每种语言的识别结果。
+    var onSegment: (([Candidate]) -> Void)?
+    var silenceTimeout: TimeInterval = 1.0
+
+    private let engine = AVAudioEngine()
+    private let sink = BufferSink()
+    private var recognizers: [SFSpeechRecognizer] = []
+    private var requests: [SFSpeechAudioBufferRecognitionRequest] = []
+    private var tasks: [SFSpeechRecognitionTask] = []
+    private var texts: [String] = []
+    private var confs: [Float] = []
+    private var finals: [Bool] = []
+    private var generation = 0
+    private var segmentOnSilence = true
+    private var finishing = false
+    private var committed = ""          // 面对面：已完成的句子
+    private var silenceTimer: Timer?
+    private var finishTimer: Timer?
+
+    var partial: String { partials.filter { !$0.isEmpty }.joined(separator: "\n") }
+
+    static func requestPermissions() async -> Bool {
+        let speechOK = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) }
+        }
+        let micOK = await AVAudioApplication.requestRecordPermission()
+        return speechOK && micOK
+    }
+
+    func start(locales: [Locale], segmentOnSilence: Bool) throws {
+        stop(flush: false)
+        var recs: [SFSpeechRecognizer] = []
+        for l in locales {
+            guard let r = SFSpeechRecognizer(locale: l), r.isAvailable else { throw ListenerError.unavailable(l.identifier) }
+            recs.append(r)
+        }
+        recognizers = recs
+        self.segmentOnSilence = segmentOnSilence
+        committed = ""
+
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0), block: Self.makeTap(sink))
+        engine.prepare()
+        try engine.start()
+        isRunning = true
+        beginRequests()
+    }
+
+    /// 稍等让最后几个字识别出来，再停止并提交。
+    func stopAndFlush() async {
+        try? await Task.sleep(for: .milliseconds(450))
+        stop(flush: true)
+    }
+
+    func setMuted(_ muted: Bool) { sink.setMuted(muted) }
+
+    func stop(flush: Bool) {
+        guard isRunning else { return }
+        isRunning = false
+        let lastTexts = texts
+        endRequests()
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        if flush {
+            if segmentOnSilence {
+                emit(lastTexts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: 0) })
+            } else {
+                let all = join(committed, lastTexts.first ?? "")
+                emit([Candidate(index: 0, text: all, confidence: 1)])
+            }
+        }
+        committed = ""
+        partials = []
+    }
+
+    // MARK: - 内部
+
+    private func beginRequests() {
+        guard isRunning else { return }
+        generation += 1
+        let gen = generation
+        finishing = false
+        let n = recognizers.count
+        texts = Array(repeating: "", count: n)
+        confs = Array(repeating: 0, count: n)
+        finals = Array(repeating: false, count: n)
+        partials = segmentOnSilence ? texts : [committed]
+
+        var reqs: [SFSpeechAudioBufferRecognitionRequest] = []
+        var tks: [SFSpeechRecognitionTask] = []
+        for (i, rec) in recognizers.enumerated() {
+            let req = SFSpeechAudioBufferRecognitionRequest()
+            req.shouldReportPartialResults = true
+            req.addsPunctuation = true
+            if rec.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }   // 离线、免费、更快
+            reqs.append(req)
+            tks.append(rec.recognitionTask(with: req, resultHandler: Self.makeHandler { [weak self] text, isFinal, conf, failed in
+                self?.handle(gen: gen, index: i, text: text, isFinal: isFinal, confidence: conf, failed: failed)
+            }))
+        }
+        requests = reqs
+        tasks = tks
+        sink.set(reqs)
+    }
+
+    private func endRequests() {
+        silenceTimer?.invalidate(); silenceTimer = nil
+        finishTimer?.invalidate(); finishTimer = nil
+        generation += 1                       // 忽略之后迟到的回调
+        sink.set([])
+        requests.forEach { $0.endAudio() }
+        tasks.forEach { $0.cancel() }
+        requests = []; tasks = []
+    }
+
+    private func handle(gen: Int, index i: Int, text: String?, isFinal: Bool, confidence: Float, failed: Bool) {
+        guard gen == generation, isRunning, i < texts.count else { return }
+        if let text, !text.isEmpty {
+            texts[i] = text
+            if segmentOnSilence { partials = texts } else { partials = [join(committed, text)] }
+            if !finishing { armSilenceTimer() }
+        }
+        if isFinal || failed {
+            finals[i] = true
+            if isFinal { confs[i] = confidence }
+        }
+
+        if segmentOnSilence {
+            if finishing {
+                if !finals.contains(false) { completeSegment() }
+            } else if isFinal || failed {
+                // 某个识别器自己结束了（停顿太久或到了约 1 分钟上限）：整段收尾
+                if texts.contains(where: { !$0.isEmpty }) {
+                    startFinishing()
+                } else {
+                    endRequests()                       // 什么都没听到就出错了：稍后重开
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                        Task { @MainActor in self?.beginRequests() }
+                    }
+                }
+            }
+        } else if isFinal || failed {
+            // 面对面：累积这一段，接着开新任务
+            committed = join(committed, texts[0])
+            endRequests()
+            let delay: Double = (failed && texts[0].isEmpty) ? 0.3 : 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                Task { @MainActor in self?.beginRequests() }
+            }
+        }
+    }
+
+    private func armSilenceTimer() {
+        silenceTimer?.invalidate()
+        guard segmentOnSilence else { return }
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.startFinishing() }
+        }
+    }
+
+    /// 停顿了：让所有识别器收尾，拿到带把握度的最终结果。
+    private func startFinishing() {
+        guard isRunning, segmentOnSilence, !finishing else { return }
+        guard texts.contains(where: { !$0.isEmpty }) else { return }
+        finishing = true
+        silenceTimer?.invalidate()
+        sink.set([])                          // 后面的声音不再算进这一段
+        requests.forEach { $0.endAudio() }
+        if !finals.contains(false) { completeSegment(); return }
+        finishTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.completeSegment() }   // 最多等 1.5 秒
+        }
+    }
+
+    private func completeSegment() {
+        guard finishing else { return }
+        let cands = texts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: confs[$0.offset]) }
+        endRequests()
+        emit(cands)
+        beginRequests()
+    }
+
+    private func emit(_ cands: [Candidate]) {
+        let clean = cands.map { Candidate(index: $0.index, text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines), confidence: $0.confidence) }
+        guard clean.contains(where: { !$0.text.isEmpty }) else { return }
+        onSegment?(clean)
+    }
+
+    private func join(_ a: String, _ b: String) -> String {
+        if a.isEmpty { return b }
+        if b.isEmpty { return a }
+        return a + " " + b
+    }
+
+    // 这两个闭包在音频线程 / 识别线程上运行，必须不属于 MainActor。
+    nonisolated private static func makeTap(_ sink: BufferSink) -> AVAudioNodeTapBlock {
+        { buffer, _ in sink.append(buffer) }
+    }
+
+    nonisolated private static func makeHandler(
+        _ cb: @escaping @MainActor @Sendable (String?, Bool, Float, Bool) -> Void
+    ) -> (SFSpeechRecognitionResult?, Error?) -> Void {
+        { result, error in
+            let text = result?.bestTranscription.formattedString
+            let isFinal = result?.isFinal ?? false
+            let segs = result?.bestTranscription.segments ?? []
+            let conf: Float = segs.isEmpty ? 0 : segs.map(\.confidence).reduce(0, +) / Float(segs.count)
+            let failed = error != nil
+            Task { @MainActor in cb(text, isFinal, conf, failed) }
+        }
+    }
+}
