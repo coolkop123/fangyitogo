@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AVFoundation
 
 struct SettingsView: View {
@@ -34,7 +35,7 @@ struct SettingsView: View {
                     Toggle(isOn: $vm.allSpeaker) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("全部用手机外放")
-                            Text("连着耳机也从手机扬声器大声播放；播放时暂停收音，防止回声")
+                            Text("连着耳机也从手机扬声器大声播放；同传时会打开回声消除，边播边听")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -62,10 +63,17 @@ struct SettingsView: View {
                 Section {
                     VStack(alignment: .leading) {
                         Text("停顿 \(vm.silenceTimeout, specifier: "%.1f") 秒算一句")
-                        Slider(value: $vm.silenceTimeout, in: 0.6...2.5, step: 0.1)
+                        Slider(value: $vm.silenceTimeout, in: 1.0...2.5, step: 0.1)
                     }
                 } header: { Text("同传收听") } footer: {
-                    Text("数值越小出字越快，但长句可能被切断。")
+                    Text("推荐 1.4 秒。说话中间短暂停顿不会被切开；数值越小出字越快，但长句可能被切断。")
+                }
+                Section {
+                    ShareLink(item: DiagnosticExport(), preview: SharePreview("酷天同声诊断日志")) {
+                        Label("导出诊断日志", systemImage: "doc.text.magnifyingglass")
+                    }
+                } footer: {
+                    Text("同传识别有问题时，导出发给我们排查。日志只记录识别过程和文字，不含录音。")
                 }
                 if embedded {
                     Section("关于") {
@@ -93,5 +101,15 @@ struct SettingsView: View {
             .tint(Theme.me)
             .preferredColorScheme(.dark)
         }
+    }
+}
+
+/// 点「导出诊断日志」时才生成最新的日志文本。
+struct DiagnosticExport: Transferable {
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .plainText) { _ in
+            Data(DiagnosticLogger.shared.exportText().utf8)
+        }
+        .suggestedFileName("酷天同声诊断日志.txt")
     }
 }

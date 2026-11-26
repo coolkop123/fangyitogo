@@ -236,6 +236,7 @@ struct LiveStage: View {
 
     private var status: String {
         if vm.listeningSide == nil { return vm.items(.live).isEmpty ? "点下方「开始同传」" : "已停止" }
+        if listener.reconnecting { return "重连中…" }
         if !listener.partial.isEmpty { return "🎙 正在识别…" }
         if let last = vm.items(.live).last, last.translation == nil, last.failed == nil { return "翻译中…" }
         return "正在听…"
@@ -254,6 +255,9 @@ struct LiveStage: View {
             }
             if let p = listener.problem {
                 Text(p).font(.footnote).foregroundStyle(Theme.rec)
+            }
+            if listener.quiet && vm.listeningSide != nil {
+                Text("声音太小，请靠近手机（或在「我的」里调高收音灵敏度）").font(.footnote).foregroundStyle(Theme.them)
             }
             if !listener.partial.isEmpty {
                 LivePartials(names: [vm.mine.name, vm.theirs.name], texts: listener.partials, big: false)
@@ -302,7 +306,7 @@ struct ListenStatus: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Text(listener.isRunning ? (listener.partial.isEmpty ? "正在听，请说话…" : "🎙 正在识别…") : "已停止")
+                Text(!listener.isRunning ? "已停止" : listener.reconnecting ? "重连中…" : (listener.partial.isEmpty ? "正在听，请说话…" : "🎙 正在识别…"))
                     .font(.footnote.weight(.semibold)).foregroundStyle(Theme.mute)
                 if listener.isRunning { MicLevel(level: listener.level) }
                 Spacer()

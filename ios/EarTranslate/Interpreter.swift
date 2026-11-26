@@ -39,6 +39,10 @@ final class Interpreter: ObservableObject {
     private var pending: [UUID: (Side, TranslationJob)] = [:]
     private var permitted = false
     private var speakingCount = 0
+    private var warnedNoHeadset = false
+    /// 同传 + 全部外放时打开系统回声消除，播报期间不用暂停收音
+    private var echoCancel = false
+    private let log = DiagnosticLogger.shared
 
     init() {
         let d = UserDefaults.standard
@@ -48,7 +52,12 @@ final class Interpreter: ObservableObject {
         myOutput = MyOutput(rawValue: d.string(forKey: "myOutput") ?? "") ?? .speaker
         allSpeaker = d.bool(forKey: "allSpeaker")
         speechRate = d.object(forKey: "rate") as? Float ?? AVSpeechUtteranceDefaultSpeechRate
-        silenceTimeout = d.object(forKey: "silence") as? Double ?? 1.0
+        // 断句停顿默认 1.4 秒（旧版默认 1.0 秒太短，长句会被切成只剩第一个词）
+        if !d.bool(forKey: "silenceV2") {
+            d.set(true, forKey: "silenceV2")
+            if (d.object(forKey: "silence") as? Double ?? 0) < 1.2 { d.set(1.4, forKey: "silence") }
+        }
+        silenceTimeout = d.object(forKey: "silence") as? Double ?? 1.4
         sensitivity = d.object(forKey: "sensitivity") as? Double ?? 4
         speaker.rate = speechRate
         listener.silenceTimeout = silenceTimeout
@@ -110,6 +119,15 @@ final class Interpreter: ObservableObject {
 
         do {
             if mode == .live {
+                if !router.isBluetooth && !warnedNoHeadset {
+                    warnedNoHeadset = true
+                    errorMessage = allSpeaker
+                        ? "未检测到耳机：译文从手机外放时，可能会漏识别对方的话，建议佩戴耳机。"
+                        : "未检测到耳机：同传的译文只显示在屏幕上，不会播报。戴上蓝牙耳机后译文会在耳机里播放（或在「我的」里打开「全部用手机外放」）。"
+                    log.log("warn_no_headset", "allSpeaker=\(allSpeaker)")
+                }
+                echoCancel = allSpeaker
+                router.setEchoCancellation(echoCancel)
                 // 同传：中文、英文（两种语言）同时识别同一路声音，说完后选把握度高的那个
                 listener.onSegment = { [weak self] cands in self?.handleLive(cands) }
                 try listener.start(locales: [mine.locale, theirs.locale], segmentOnSilence: true)
@@ -130,11 +148,19 @@ final class Interpreter: ObservableObject {
     func stopListeningAndFlush() async {
         await listener.stopAndFlush()
         listeningSide = nil
+        endEchoCancel()
     }
 
     func stopListening() {
         listener.stop(flush: false)
         listeningSide = nil
+        endEchoCancel()
+    }
+
+    private func endEchoCancel() {
+        guard echoCancel else { return }
+        echoCancel = false
+        router.setEchoCancellation(false)
     }
 
     // MARK: - 同传：判断是谁在说
@@ -142,6 +168,7 @@ final class Interpreter: ObservableObject {
     /// 两个识别器各给出一个结果：选把握度高的；把握度都没有时，按文字类型判断。
     func handleLive(_ cands: [Candidate]) {
         guard let best = Self.pick(cands, languages: [mine, theirs]) else { return }
+        log.log("language_pick", "lang=\(best.index == 0 ? mine.speechID : theirs.speechID) text=\"\(best.text)\"")
         submit(best.text, side: best.index == 0 ? .me : .them)
     }
 
@@ -244,11 +271,13 @@ final class Interpreter: ObservableObject {
         let target = u.side == .me ? theirs : mine
         let toSpeaker = allSpeaker || (u.side == .me && myOutput == .speaker)
         // 声音从扬声器出来时，暂时屏蔽麦克风，防止回声被识别
-        let muteMic = listeningSide != nil && (toSpeaker || !router.isBluetooth)
+        let muteMic = listeningSide != nil && (toSpeaker || !router.isBluetooth) && !echoCancel
         speakingCount += 1
         if toSpeaker { router.setSpeakerOverride(true) }
         if muteMic { listener.setMuted(true) }
+        log.log("tts_start", "lang=\(target.speechID) speaker=\(toSpeaker) muteMic=\(muteMic) len=\(text.count)")
         await speaker.speak(text, language: target.speechID, id: u.id)
+        log.log("tts_end")
         speakingCount -= 1
         if speakingCount == 0 {
             if toSpeaker { router.setSpeakerOverride(false) }

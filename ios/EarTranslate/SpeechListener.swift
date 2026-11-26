@@ -60,12 +60,13 @@ private final class BufferSink: @unchecked Sendable {
     }
 }
 
-/// 在音频线程上算麦克风音量，大约每 0.1 秒交给界面一次；同时记下最近一次收到声音 / 有人说话的时间（给看门狗用）。
+/// 在音频线程上算麦克风音量，大约每 0.1 秒交给界面一次；同时记下最近一次收到声音、有人说话、声音偏小的时间（给看门狗用）。
 private final class LevelMeter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     private var lastBuffer: TimeInterval = 0
     private var lastLoud: TimeInterval = 0
+    private var weakSince: TimeInterval = 0
     var onLevel: (@Sendable (Float) -> Void)?
     func feed(_ b: AVAudioPCMBuffer) {
         let now = ProcessInfo.processInfo.systemUptime
@@ -75,35 +76,76 @@ private final class LevelMeter: @unchecked Sendable {
         var sum: Float = 0
         for i in 0..<n { sum += ch[i] * ch[i] }
         let rms = (sum / Float(n)).squareRoot()
-        if rms > 0.01 { lock.lock(); lastLoud = now; lock.unlock() }
+        lock.lock()
+        if rms > 0.01 { lastLoud = now }
+        // 有声音但偏小（远处说话）：0.004 ~ 0.015
+        if rms > 0.004 && rms < 0.015 { if weakSince == 0 { weakSince = now } } else { weakSince = 0 }
+        lock.unlock()
         onLevel?(min(1, rms * 8))
     }
-    func reset() { lock.lock(); lastBuffer = ProcessInfo.processInfo.systemUptime; lastLoud = 0; lock.unlock() }
-    /// (距上次收到声音的秒数, 距上次有人说话的秒数)
-    func ages() -> (buffer: TimeInterval, loud: TimeInterval) {
+    func reset() { lock.lock(); lastBuffer = ProcessInfo.processInfo.systemUptime; lastLoud = 0; weakSince = 0; lock.unlock() }
+    /// (距上次收到声音, 距上次有人说话, 声音偏小已持续) 秒数
+    func ages() -> (buffer: TimeInterval, loud: TimeInterval, faint: TimeInterval) {
         let now = ProcessInfo.processInfo.systemUptime
         lock.lock(); defer { lock.unlock() }
-        return (now - lastBuffer, lastLoud == 0 ? .infinity : now - lastLoud)
+        return (now - lastBuffer, lastLoud == 0 ? .infinity : now - lastLoud, weakSince == 0 ? 0 : now - weakSince)
     }
+}
+
+/// 诊断日志：记录识别会话起止和原因、断句定版、语种判定、播报起止、音量提示。「我的」页可导出。
+final class DiagnosticLogger: @unchecked Sendable {
+    static let shared = DiagnosticLogger()
+    private let lock = NSLock()
+    private var lines: [String] = []
+    private let fmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm:ss.SSS"; return f
+    }()
+    func log(_ event: String, _ detail: String = "") {
+        lock.lock(); defer { lock.unlock() }
+        lines.append("[\(fmt.string(from: Date()))] \(event) \(detail)")
+        if lines.count > 4000 { lines.removeFirst(lines.count - 4000) }
+    }
+    func exportText() -> String {
+        lock.lock(); defer { lock.unlock() }
+        let info = Bundle.main.infoDictionary
+        let head = "酷天同声 诊断日志 \(info?["CFBundleShortVersionString"] ?? "")(\(info?["CFBundleVersion"] ?? ""))  iOS \(ProcessInfo.processInfo.operatingSystemVersionString)\n"
+        return head + lines.joined(separator: "\n")
+    }
+    func clear() { lock.lock(); lines.removeAll(); lock.unlock() }
+}
+
+/// 一段已经断句、正在等最终结果的识别（新的一段同时已经开始收音，不丢字头）。
+private struct Closing {
+    var texts: [String]
+    var confs: [Float]
+    var finals: [Bool]
+    var tasks: [SFSpeechRecognitionTask]
 }
 
 /// 连续语音识别。
 /// - 面对面：一种语言，一直累积到手动停止。
-/// - 同传：同时用两种语言识别同一路声音，停顿后比较两边的把握度，交给调用方选择。
+/// - 同传：同时用两种语言识别同一路声音；一句话说完（停顿约 1.4 秒）才定版，比较两边把握度选一种语言，
+///   一句话里不会中途换语言。断句的同时就开始收下一句，不吞字头。
 @MainActor
 final class SpeechListener: ObservableObject {
-    /// 每种语言当前的实时识别文字（同传时屏幕上同时显示）。
+    /// 每种语言当前的实时识别文字（同传时屏幕上同时显示，不进入气泡）。
     @Published private(set) var partials: [String] = []
     @Published private(set) var isRunning = false
+    /// 正在重新连接麦克风 / 识别（界面显示「重连中」，不假装在听）。
+    @Published private(set) var reconnecting = false
+    /// 声音偏小，提示靠近手机。
+    @Published private(set) var quiet = false
     /// 麦克风音量 0~1（说话时会跳动）。
     @Published private(set) var level: Float = 0
     /// 识别连续出错时的原因（显示在屏幕上）。
     @Published private(set) var problem: String?
 
-    /// 一段话结束：给出每种语言的识别结果。
+    /// 一段话定版：给出每种语言的识别结果。
     var onSegment: (([Candidate]) -> Void)?
-    var silenceTimeout: TimeInterval = 1.0
+    /// 停顿多久算一句（秒）。
+    var silenceTimeout: TimeInterval = 1.4
 
+    private let log = DiagnosticLogger.shared
     private var engine = AVAudioEngine()
     private let sink = BufferSink()
     private let meter = LevelMeter()
@@ -115,17 +157,16 @@ final class SpeechListener: ObservableObject {
     private var texts: [String] = []
     private var confs: [Float] = []
     private var finals: [Bool] = []
+    private var closing: [Int: Closing] = [:]   // 已断句、等最终结果的段（按 generation）
     private var generation = 0
     private var segmentOnSilence = true
-    private var finishing = false
     private var committed = ""          // 面对面：已完成的句子
     private var silenceTimer: Timer?
-    private var finishTimer: Timer?
     private var watchdog: Timer?
     private var configObserver: NSObjectProtocol?
     private var segmentStarted: TimeInterval = 0     // 这一段识别开始的时间
     private var lastResult: TimeInterval = 0         // 最近一次收到识别文字的时间
-    private var finishingSince: TimeInterval = 0
+    private var lastRestart: TimeInterval = 0
     private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     var partial: String { partials.filter { !$0.isEmpty }.joined(separator: "\n") }
@@ -146,6 +187,7 @@ final class SpeechListener: ObservableObject {
             recs.append(r)
         }
         recognizers = recs
+        log.log("listen_start", "locales=\(locales.map(\.identifier)) segment=\(segmentOnSilence) silence=\(silenceTimeout)s route=\(AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portName))")
         self.segmentOnSilence = segmentOnSilence
         committed = ""
         failStreak = Array(repeating: 0, count: recs.count)
@@ -167,6 +209,7 @@ final class SpeechListener: ObservableObject {
             }
         }
         if let lastError {
+            log.log("mic_open_failed", "\(lastError)")
             Self.prepareSession(attempt: 0)          // 恢复正常设置，不影响播报
             throw ListenerError.micBusy(Self.diagnose(lastError))
         }
@@ -179,7 +222,7 @@ final class SpeechListener: ObservableObject {
     // MARK: - 自动恢复
 
     /// 外放 / 耳机切换等音频变化会让系统悄悄停掉录音引擎：收到通知就重启；
-    /// 另外每秒检查一次，发现没声音进来、识别卡住时自动恢复，让同传一直连续工作。
+    /// 另外每秒检查一次：没声音进来、识别卡住、到了单次识别时长上限，都自动接上，让同传一直连续工作。
     private func startWatching() {
         if configObserver == nil {
             configObserver = NotificationCenter.default.addObserver(
@@ -188,7 +231,7 @@ final class SpeechListener: ObservableObject {
                 let source = (note.object as AnyObject?).map(ObjectIdentifier.init)
                 Task { @MainActor in
                     guard let self, source == nil || source == ObjectIdentifier(self.engine) else { return }
-                    self.restartEngine()
+                    self.restartEngine(reason: "audio_config_change")
                 }
             }
         }
@@ -209,29 +252,35 @@ final class SpeechListener: ObservableObject {
         // 1. 2 秒多没有任何声音进来：录音引擎停了，重启
         if ages.buffer > 2.5 || !engine.isRunning {
             level = 0
-            restartEngine()
-            return
-        }
-        // 2. 收尾等太久（最终结果没回来）：直接提交
-        if finishing {
-            if now - finishingSince > 3 { completeSegment() }
+            restartEngine(reason: "no_audio_\(Int(ages.buffer))s")
             return
         }
         let hasText = texts.contains { !$0.isEmpty }
+        // 声音一直偏小又没识别出字：提示靠近手机
+        let q = ages.faint > 3 && !hasText
+        if q != quiet { quiet = q; if q { log.log("warn_low_volume") } }
+        guard segmentOnSilence else { return }
+        let age = now - segmentStarted
         if hasText {
-            // 3. 有文字但停顿计时器没触发：手动收尾
-            if now - lastResult > silenceTimeout + 2 { startFinishing() }
-        } else if (ages.loud < 2 && now - segmentStarted > 6) || now - segmentStarted > 50 {
-            // 4. 一直有人说话却 6 秒没有任何识别文字，或空等快到 1 分钟上限：换新的识别任务
+            if age > 55 {
+                // 苹果单次识别约 1 分钟上限：赶在被掐断前主动断句、无缝开新一段
+                startFinishing(reason: "rotate_55s")
+            } else if now - lastResult > silenceTimeout + 3 {
+                startFinishing(reason: "watchdog_silence")      // 停顿计时器没触发：手动收尾
+            }
+        } else if (ages.loud < 2 && age > 6) || age > 50 {
+            // 一直有人说话却 6 秒没有任何识别文字，或空等快到上限：换新的识别任务
+            log.log("session_rotate", ages.loud < 2 ? "stuck_while_talking" : "idle_50s")
             endRequests()
             beginRequests()
         }
     }
 
-    private var lastRestart: TimeInterval = 0
-    private func restartEngine() {
+    private func restartEngine(reason: String) {
         guard isRunning, now - lastRestart > 0.8 else { return }   // 防止短时间内反复重启
         lastRestart = now
+        reconnecting = true
+        log.log("engine_restart", reason)
         var ok = false
         for attempt in 0..<4 {
             Self.prepareSession(attempt: attempt)
@@ -240,11 +289,15 @@ final class SpeechListener: ObservableObject {
             engine.inputNode.removeTap(onBus: 0)
         }
         meter.reset()
-        guard ok else { problem = "麦克风被中断，正在重试…"; return }
-        if problem == "麦克风被中断，正在重试…" { problem = nil }
-        // 麦克风格式可能变了：把已听到的这段收尾，再开新的识别任务
-        if finishing { return }
-        if texts.contains(where: { !$0.isEmpty }) { startFinishing() } else { endRequests(); beginRequests() }
+        guard ok else { log.log("engine_restart_failed"); return }    // 看门狗 1 秒后再试，期间显示「重连中」
+        reconnecting = false
+        // 麦克风格式可能变了：把已听到的这段定版，再开新的识别任务
+        if segmentOnSilence, texts.contains(where: { !$0.isEmpty }) {
+            startFinishing(reason: "engine_restart")
+        } else {
+            if !segmentOnSilence { committed = join(committed, texts.first ?? "") }
+            endRequests(); beginRequests()
+        }
     }
 
     /// 每次新建一个录音引擎（避免沿用旧的麦克风格式），确认麦克风可用后再启动。
@@ -318,14 +371,18 @@ final class SpeechListener: ObservableObject {
         guard isRunning else { return }
         isRunning = false
         stopWatching()
+        log.log("listen_stop", "flush=\(flush)")
         let lastTexts = texts
+        let lastConfs = confs
         endRequests()
+        // 已断句、还在等最终结果的段：用现有文字直接定版
+        for gen in closing.keys.sorted() { flushClosing(gen, emitIt: flush) }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         Self.prepareSession(attempt: 0)          // 如果刚才用的是「只录音」模式，恢复成能播报的设置
         if flush {
             if segmentOnSilence {
-                emit(lastTexts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: 0) })
+                emit(lastTexts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: lastConfs[$0.offset]) })
             } else {
                 let all = join(committed, lastTexts.first ?? "")
                 emit([Candidate(index: 0, text: all, confidence: 1)])
@@ -334,6 +391,8 @@ final class SpeechListener: ObservableObject {
         committed = ""
         partials = []
         level = 0
+        reconnecting = false
+        quiet = false
     }
 
     // MARK: - 内部
@@ -342,9 +401,9 @@ final class SpeechListener: ObservableObject {
         guard isRunning else { return }
         generation += 1
         let gen = generation
-        finishing = false
         segmentStarted = now
         lastResult = now
+        reconnecting = false
         let n = recognizers.count
         texts = Array(repeating: "", count: n)
         confs = Array(repeating: 0, count: n)
@@ -358,6 +417,7 @@ final class SpeechListener: ObservableObject {
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             req.addsPunctuation = true
+            req.taskHint = .dictation
             // 不强制离线：能离线就离线，离线资源没准备好时交给苹果服务器，避免悄悄失败
             req.requiresOnDeviceRecognition = false
             reqs.append(req)
@@ -367,12 +427,12 @@ final class SpeechListener: ObservableObject {
         }
         requests = reqs
         tasks = tks
-        sink.set(reqs)
+        sink.set(reqs)                         // 新一段立即接上麦克风
     }
 
+    /// 取消当前这一段（不定版）。
     private func endRequests() {
         silenceTimer?.invalidate(); silenceTimer = nil
-        finishTimer?.invalidate(); finishTimer = nil
         generation += 1                       // 忽略之后迟到的回调
         sink.set([])
         requests.forEach { $0.endAudio() }
@@ -381,8 +441,14 @@ final class SpeechListener: ObservableObject {
     }
 
     private func handle(gen: Int, index i: Int, text: String?, isFinal: Bool, confidence: Float, error: (code: Int, message: String)?) {
-        guard gen == generation, isRunning, i < texts.count else { return }
+        guard isRunning else { return }
+        if gen != generation {
+            handleClosing(gen: gen, index: i, text: text, isFinal: isFinal, confidence: confidence, failed: error != nil)
+            return
+        }
+        guard i < texts.count else { return }
         let failed = error != nil
+        if let error { log.log("recognizer_error", "gen=\(gen) idx=\(i) code=\(error.code) \(error.message) text=\"\(texts[i])\"") }
         // 出错又什么都没识别出来：只停这一个识别器，不影响另一个
         if let error, (text ?? "").isEmpty, texts[i].isEmpty {
             dead[i] = true; finals[i] = true
@@ -395,14 +461,15 @@ final class SpeechListener: ObservableObject {
                 }
             }
             if !dead.contains(false) {
-                // 所有识别器都停了：稍等后重新开始（连续出错时等久一点）
-                let wait = min(3.0, 0.4 * Double(max(1, failStreak.max() ?? 1)))
+                // 所有识别器都停了：稍等后重新开始（连续出错时等久一点），期间显示「重连中」
+                let streak = failStreak.max() ?? 0
+                let wait = streak == 0 ? 0.0 : [0.0, 0.5, 1.5, 3.0][min(3, streak)]
                 endRequests()
+                if wait > 0.2 { reconnecting = true }
+                log.log("session_reconnect", "wait=\(wait)s")
                 DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
                     Task { @MainActor in self?.beginRequests() }
                 }
-            } else if finishing, !finals.contains(false) {
-                completeSegment()
             }
             return
         }
@@ -411,7 +478,7 @@ final class SpeechListener: ObservableObject {
             lastResult = now
             texts[i] = text
             if segmentOnSilence { partials = texts } else { partials = [join(committed, text)] }
-            if !finishing { armSilenceTimer() }
+            armSilenceTimer()
         }
         if isFinal || failed {
             finals[i] = true
@@ -419,17 +486,12 @@ final class SpeechListener: ObservableObject {
         }
 
         if segmentOnSilence {
-            if finishing {
-                if !finals.contains(false) { completeSegment() }
-            } else if isFinal || failed {
-                // 某个识别器自己结束了（停顿太久或到了约 1 分钟上限）：整段收尾
+            if isFinal || failed {
+                // 某个识别器自己结束了（停顿太久或到了约 1 分钟上限）：整段定版
                 if texts.contains(where: { !$0.isEmpty }) {
-                    startFinishing()
-                } else if !dead.contains(false) || !finals.contains(false) {
-                    endRequests()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                        Task { @MainActor in self?.beginRequests() }
-                    }
+                    startFinishing(reason: isFinal ? "recognizer_final_\(i)" : "recognizer_error_\(i)")
+                } else if !finals.contains(false) {
+                    endRequests(); beginRequests()
                 }
             }
         } else if isFinal || failed {
@@ -443,35 +505,62 @@ final class SpeechListener: ObservableObject {
         }
     }
 
+    /// 已断句的段收到迟到的结果：更新文字和把握度，全部结束后定版。
+    private func handleClosing(gen: Int, index i: Int, text: String?, isFinal: Bool, confidence: Float, failed: Bool) {
+        guard var c = closing[gen], i < c.texts.count else { return }
+        if let text, !text.isEmpty { c.texts[i] = text }
+        if isFinal { c.confs[i] = confidence }
+        if isFinal || failed { c.finals[i] = true }
+        closing[gen] = c
+        if !c.finals.contains(false) { flushClosing(gen, emitIt: true) }
+    }
+
+    private func flushClosing(_ gen: Int, emitIt: Bool) {
+        guard let c = closing.removeValue(forKey: gen) else { return }
+        c.tasks.forEach { $0.cancel() }
+        guard emitIt else { return }
+        let cands = c.texts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: c.confs[$0.offset]) }
+        log.log("utterance_commit", "gen=\(gen) " + cands.map { "[\($0.index)] conf=\(String(format: "%.2f", $0.confidence)) \"\($0.text)\"" }.joined(separator: " "))
+        emit(cands)
+    }
+
+    /// 静音断句：最后一次出字后停顿 silenceTimeout 秒才定版；如果麦克风里仍然有人在说话（识别慢了），再多等一会儿。
     private func armSilenceTimer() {
         silenceTimer?.invalidate()
         guard segmentOnSilence else { return }
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceTimeout, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.startFinishing() }
+            Task { @MainActor in self?.silenceElapsed() }
         }
     }
 
-    /// 停顿了：让所有识别器收尾，拿到带把握度的最终结果。
-    private func startFinishing() {
-        guard isRunning, segmentOnSilence, !finishing else { return }
+    private func silenceElapsed() {
+        guard isRunning, segmentOnSilence else { return }
+        let stillTalking = meter.ages().loud < 0.6
+        if stillTalking && now - lastResult < 4 {
+            // 还在说话，只是识别结果还没跟上：不切句
+            silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.silenceElapsed() }
+            }
+            return
+        }
+        startFinishing(reason: "silence_\(silenceTimeout)s")
+    }
+
+    /// 断句：这一段停止收音、等最终结果（最多 2 秒）；同时立刻开始收下一段，不丢字头。
+    private func startFinishing(reason: String) {
+        guard isRunning, segmentOnSilence else { return }
         guard texts.contains(where: { !$0.isEmpty }) else { return }
-        finishing = true
-        finishingSince = now
-        silenceTimer?.invalidate()
-        sink.set([])                          // 后面的声音不再算进这一段
+        silenceTimer?.invalidate(); silenceTimer = nil
+        let gen = generation
+        log.log("utterance_endpoint", "gen=\(gen) reason=\(reason) age=\(String(format: "%.1f", now - segmentStarted))s")
         requests.forEach { $0.endAudio() }
-        if !finals.contains(false) { completeSegment(); return }
-        finishTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.completeSegment() }   // 最多等 1.5 秒
+        closing[gen] = Closing(texts: texts, confs: confs, finals: finals, tasks: tasks)
+        requests = []; tasks = []
+        beginRequests()                        // 新一段马上接上麦克风
+        if let c = closing[gen], !c.finals.contains(false) { flushClosing(gen, emitIt: true); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            Task { @MainActor in self?.flushClosing(gen, emitIt: true) }   // 最多等 2 秒
         }
-    }
-
-    private func completeSegment() {
-        guard finishing else { return }
-        let cands = texts.enumerated().map { Candidate(index: $0.offset, text: $0.element, confidence: confs[$0.offset]) }
-        endRequests()
-        emit(cands)
-        beginRequests()
     }
 
     private func emit(_ cands: [Candidate]) {

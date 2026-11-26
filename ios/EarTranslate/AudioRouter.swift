@@ -64,6 +64,17 @@ final class AudioRouter: ObservableObject {
         refresh()
     }
 
+    /// 打开 / 关闭系统回声消除（voiceChat 模式）：外放的译文不会被麦克风当成人声再识别一遍。
+    func setEchoCancellation(_ on: Bool) {
+        let s = AVAudioSession.sharedInstance()
+        let mode: AVAudioSession.Mode = on ? .voiceChat : .default
+        guard s.mode != mode else { return }
+        try? s.setCategory(.playAndRecord, mode: mode,
+                           options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .duckOthers])
+        try? s.setActive(true)
+        refresh()
+    }
+
     func refresh() {
         let route = AVAudioSession.sharedInstance().currentRoute
         inputName = route.inputs.first?.portName ?? "无"
