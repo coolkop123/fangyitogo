@@ -32,6 +32,10 @@ struct ContentView: View {
                 LiveStage(listener: vm.listener) { showCaptions = true }
                     .padding(.horizontal, 14)
                     .padding(.top, 6)
+            } else if vm.listeningSide != nil || vm.listener.problem != nil {
+                ListenStatus(listener: vm.listener)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 6)
             }
             controls
         }
@@ -385,13 +389,17 @@ struct LiveStage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 10) {
                 Text(status).font(.footnote.weight(.semibold)).foregroundStyle(Theme.mute)
+                if vm.listeningSide != nil { MicLevel(level: listener.level) }
                 Spacer()
                 Button(action: onFull) {
                     Label("全屏", systemImage: "arrow.up.left.and.arrow.down.right").font(.footnote)
                 }
                 .foregroundStyle(Theme.mute)
+            }
+            if let p = listener.problem {
+                Text(p).font(.footnote).foregroundStyle(Theme.rec)
             }
             if !listener.partial.isEmpty {
                 LivePartials(names: [vm.mine.name, vm.theirs.name], texts: listener.partials, big: false)
@@ -415,6 +423,44 @@ struct LiveStage: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(Theme.panel))
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.line))
         .animation(.easeOut(duration: 0.2), value: vm.items.last?.translation)
+    }
+}
+
+/// 麦克风音量条：说话时会跳动，用来确认麦克风收到了声音。
+struct MicLevel: View {
+    let level: Float
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<8, id: \.self) { i in
+                Capsule()
+                    .fill(Float(i) / 8 < level ? Theme.me : Theme.line)
+                    .frame(width: 4, height: 6 + CGFloat(i) * 1.5)
+            }
+        }
+        .animation(.linear(duration: 0.1), value: level)
+        .accessibilityLabel("麦克风音量")
+    }
+}
+
+/// 面对面录音时的状态条：麦克风音量和识别出错原因。
+struct ListenStatus: View {
+    @ObservedObject var listener: SpeechListener
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(listener.isRunning ? (listener.partial.isEmpty ? "正在听，请说话…" : "🎙 正在识别…") : "已停止")
+                    .font(.footnote.weight(.semibold)).foregroundStyle(Theme.mute)
+                if listener.isRunning { MicLevel(level: listener.level) }
+                Spacer()
+            }
+            if let p = listener.problem {
+                Text(p).font(.footnote).foregroundStyle(Theme.rec)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line))
     }
 }
 

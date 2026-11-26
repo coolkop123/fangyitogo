@@ -31,6 +31,21 @@ private final class BufferSink: @unchecked Sendable {
     }
 }
 
+/// 在音频线程上算麦克风音量，大约每 0.1 秒交给界面一次。
+private final class LevelMeter: @unchecked Sendable {
+    private var count = 0
+    var onLevel: (@Sendable (Float) -> Void)?
+    func feed(_ b: AVAudioPCMBuffer) {
+        count += 1
+        guard count % 4 == 0, let ch = b.floatChannelData?[0], b.frameLength > 0 else { return }
+        let n = Int(b.frameLength)
+        var sum: Float = 0
+        for i in 0..<n { sum += ch[i] * ch[i] }
+        let rms = (sum / Float(n)).squareRoot()
+        onLevel?(min(1, rms * 8))
+    }
+}
+
 /// 连续语音识别。
 /// - 面对面：一种语言，一直累积到手动停止。
 /// - 同传：同时用两种语言识别同一路声音，停顿后比较两边的把握度，交给调用方选择。
@@ -39,6 +54,10 @@ final class SpeechListener: ObservableObject {
     /// 每种语言当前的实时识别文字（同传时屏幕上同时显示）。
     @Published private(set) var partials: [String] = []
     @Published private(set) var isRunning = false
+    /// 麦克风音量 0~1（说话时会跳动）。
+    @Published private(set) var level: Float = 0
+    /// 识别连续出错时的原因（显示在屏幕上）。
+    @Published private(set) var problem: String?
 
     /// 一段话结束：给出每种语言的识别结果。
     var onSegment: (([Candidate]) -> Void)?
@@ -46,6 +65,9 @@ final class SpeechListener: ObservableObject {
 
     private let engine = AVAudioEngine()
     private let sink = BufferSink()
+    private let meter = LevelMeter()
+    private var dead: [Bool] = []          // 这一段里已经出错的识别器
+    private var failStreak: [Int] = []     // 每个识别器连续出错的次数
     private var recognizers: [SFSpeechRecognizer] = []
     private var requests: [SFSpeechAudioBufferRecognitionRequest] = []
     private var tasks: [SFSpeechRecognitionTask] = []
@@ -79,10 +101,13 @@ final class SpeechListener: ObservableObject {
         recognizers = recs
         self.segmentOnSilence = segmentOnSilence
         committed = ""
+        failStreak = Array(repeating: 0, count: recs.count)
+        problem = nil
+        meter.onLevel = { [weak self] v in Task { @MainActor in self?.level = v } }
 
         let input = engine.inputNode
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0), block: Self.makeTap(sink))
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0), block: Self.makeTap(sink, meter))
         engine.prepare()
         try engine.start()
         isRunning = true
@@ -114,6 +139,7 @@ final class SpeechListener: ObservableObject {
         }
         committed = ""
         partials = []
+        level = 0
     }
 
     // MARK: - 内部
@@ -127,6 +153,7 @@ final class SpeechListener: ObservableObject {
         texts = Array(repeating: "", count: n)
         confs = Array(repeating: 0, count: n)
         finals = Array(repeating: false, count: n)
+        dead = Array(repeating: false, count: n)
         partials = segmentOnSilence ? texts : [committed]
 
         var reqs: [SFSpeechAudioBufferRecognitionRequest] = []
@@ -135,10 +162,11 @@ final class SpeechListener: ObservableObject {
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             req.addsPunctuation = true
-            if rec.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }   // 离线、免费、更快
+            // 不强制离线：能离线就离线，离线资源没准备好时交给苹果服务器，避免悄悄失败
+            req.requiresOnDeviceRecognition = false
             reqs.append(req)
-            tks.append(rec.recognitionTask(with: req, resultHandler: Self.makeHandler { [weak self] text, isFinal, conf, failed in
-                self?.handle(gen: gen, index: i, text: text, isFinal: isFinal, confidence: conf, failed: failed)
+            tks.append(rec.recognitionTask(with: req, resultHandler: Self.makeHandler { [weak self] text, isFinal, conf, err in
+                self?.handle(gen: gen, index: i, text: text, isFinal: isFinal, confidence: conf, error: err)
             }))
         }
         requests = reqs
@@ -156,8 +184,33 @@ final class SpeechListener: ObservableObject {
         requests = []; tasks = []
     }
 
-    private func handle(gen: Int, index i: Int, text: String?, isFinal: Bool, confidence: Float, failed: Bool) {
+    private func handle(gen: Int, index i: Int, text: String?, isFinal: Bool, confidence: Float, error: (code: Int, message: String)?) {
         guard gen == generation, isRunning, i < texts.count else { return }
+        let failed = error != nil
+        // 出错又什么都没识别出来：只停这一个识别器，不影响另一个
+        if let error, (text ?? "").isEmpty, texts[i].isEmpty {
+            dead[i] = true; finals[i] = true
+            let benign = error.code == 1110 || error.code == 203 || error.code == 216 || error.code == 301   // 没听到说话 / 被取消
+            if !benign {
+                failStreak[i] += 1
+                if failStreak[i] >= 2 {
+                    let name = recognizers[i].locale.localizedString(forIdentifier: recognizers[i].locale.identifier) ?? recognizers[i].locale.identifier
+                    problem = "「\(name)」识别出错：\(error.message)（代码 \(error.code)）"
+                }
+            }
+            if !dead.contains(false) {
+                // 所有识别器都停了：稍等后重新开始（连续出错时等久一点）
+                let wait = min(3.0, 0.4 * Double(max(1, failStreak.max() ?? 1)))
+                endRequests()
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    Task { @MainActor in self?.beginRequests() }
+                }
+            } else if finishing, !finals.contains(false) {
+                completeSegment()
+            }
+            return
+        }
+        if let t = text, !t.isEmpty { failStreak[i] = 0; if !failStreak.contains(where: { $0 >= 2 }) { problem = nil } }
         if let text, !text.isEmpty {
             texts[i] = text
             if segmentOnSilence { partials = texts } else { partials = [join(committed, text)] }
@@ -175,8 +228,8 @@ final class SpeechListener: ObservableObject {
                 // 某个识别器自己结束了（停顿太久或到了约 1 分钟上限）：整段收尾
                 if texts.contains(where: { !$0.isEmpty }) {
                     startFinishing()
-                } else {
-                    endRequests()                       // 什么都没听到就出错了：稍后重开
+                } else if !dead.contains(false) || !finals.contains(false) {
+                    endRequests()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                         Task { @MainActor in self?.beginRequests() }
                     }
@@ -236,20 +289,23 @@ final class SpeechListener: ObservableObject {
     }
 
     // 这两个闭包在音频线程 / 识别线程上运行，必须不属于 MainActor。
-    nonisolated private static func makeTap(_ sink: BufferSink) -> AVAudioNodeTapBlock {
-        { buffer, _ in sink.append(buffer) }
+    nonisolated private static func makeTap(_ sink: BufferSink, _ meter: LevelMeter) -> AVAudioNodeTapBlock {
+        { buffer, _ in sink.append(buffer); meter.feed(buffer) }
     }
 
     nonisolated private static func makeHandler(
-        _ cb: @escaping @MainActor @Sendable (String?, Bool, Float, Bool) -> Void
+        _ cb: @escaping @MainActor @Sendable (String?, Bool, Float, (code: Int, message: String)?) -> Void
     ) -> (SFSpeechRecognitionResult?, Error?) -> Void {
         { result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
             let segs = result?.bestTranscription.segments ?? []
             let conf: Float = segs.isEmpty ? 0 : segs.map(\.confidence).reduce(0, +) / Float(segs.count)
-            let failed = error != nil
-            Task { @MainActor in cb(text, isFinal, conf, failed) }
+            let err: (code: Int, message: String)? = error.map { e in
+                let ns = e as NSError
+                return (ns.code, ns.localizedDescription)
+            }
+            Task { @MainActor in cb(text, isFinal, conf, err) }
         }
     }
 }
