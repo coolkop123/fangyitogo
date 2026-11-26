@@ -9,6 +9,11 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("播报") {
+                    Button {
+                        Task { await vm.testSpeaker() }
+                    } label: {
+                        Label("试听外放（从手机扬声器播一句）", systemImage: "speaker.wave.2.fill")
+                    }
                     Toggle("译文自动播报", isOn: $vm.autoSpeak)
                     Toggle(isOn: $vm.allSpeaker) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -45,9 +50,13 @@ struct SettingsView: View {
                     Label("第一次用某种语言时，系统会提示下载离线翻译包，之后不联网也能翻译。", systemImage: "5.circle")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .tint(Theme.me)
+            .preferredColorScheme(.dark)
         }
     }
 }

@@ -47,7 +47,10 @@ final class AudioRouter: ObservableObject {
 
     /// 临时把声音切到手机扬声器（给对面的人听），结束后恢复耳机。
     func setSpeakerOverride(_ on: Bool) {
-        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
+        let s = AVAudioSession.sharedInstance()
+        if s.category != .playAndRecord { try? configure() }
+        try? s.setActive(true)
+        try? s.overrideOutputAudioPort(on ? .speaker : .none)
         refresh()
     }
 

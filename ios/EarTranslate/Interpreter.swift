@@ -250,6 +250,15 @@ final class Interpreter: ObservableObject {
         }
     }
 
+    /// 设置里的「试听外放」：从手机扬声器播一句，确认外放有没有声音。
+    func testSpeaker() async {
+        prepare()
+        let sample = mine.speechID.hasPrefix("zh") ? "你好，这是酷天同声的外放测试。" : "Hello, this is a speaker test."
+        router.setSpeakerOverride(true)
+        await speaker.speak(sample, language: mine.speechID, id: UUID())
+        router.setSpeakerOverride(false)
+    }
+
     func clear() {
         items.removeAll()
     }
