@@ -161,7 +161,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.6</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.7</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -232,7 +232,16 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
     <label class="f chk">同传：自动识别双方语言<input type="checkbox" id="autoLang"></label>
     <div id="sttBox">
       <label class="f">识别模型<input type="text" id="sttModel" placeholder="gpt-transcribe" autocapitalize="off" spellcheck="false"></label>
-      <p class="hint" id="autoHint">打开后同传不用分谁在说：听到哪种语言，就翻译成另一种。<b>没填 OpenAI Key 时用免费方式</b>：用 iPhone 听写按中文（或日文、韩文等）来听，识别出汉字算一方、英文字母算另一方，适合中文和英文这样文字不同的两种语言。填了 OpenAI Key 会改用 OpenAI 识别，更准，按用量计费。播报译文时会暂停收音，避免把译文又识别一遍。</p>
+      <p class="hint" id="autoHint">打开后同传不用分谁在说：听到哪种语言，就翻译成另一种。<b>没填 OpenAI Key 时用下面的免费识别模型</b>；填了 Key 会改用 OpenAI 识别（更快，按用量计费）。</p>
+      <label class="f">免费识别模型
+        <select id="localAsr">
+          <option value="base">Whisper base：更准（推荐）</option>
+          <option value="tiny">Whisper tiny：更快、下载更小，准确度一般</option>
+          <option value="off">不用（改用 iPhone 听写，同传只能听对方语言）</option>
+        </select>
+      </label>
+      <div class="btnrow"><button type="button" id="localPre">预先下载模型</button></div>
+      <p class="hint" id="localStat"></p>
     </div>
     <label class="f"><span>语速 <b id="rateV"></b></span><input type="range" id="rate" min="0.6" max="1.6" step="0.1"></label>
     <label class="f"><span>同传断句：停顿 <b id="silV"></b> 秒算一句</span><input type="range" id="sil" min="0.6" max="2.5" step="0.1"></label>
@@ -297,7 +306,7 @@ const S={
   rate:store.get("rate",1),sil:store.get("sil",1.2),out:store.get("out","auto"),flip:store.get("flip",false),
   voice:store.get("voice","system"),ttsVoice:store.get("ttsVoice","marin"),ttsModel:store.get("ttsModel","gpt-4o-mini-tts"),
   autoLang:store.get("autoLang",true),sttModel:store.get("sttModel","gpt-transcribe"),
-  mic:store.get("mic",""),rawMic:store.get("rawMic",false)
+  mic:store.get("mic",""),rawMic:store.get("rawMic",false),localAsr:store.get("localAsr","base")
 };
 let items=store.get("items",[]);
 
@@ -315,7 +324,7 @@ function syncLangs(){
   const A=L(S.a).n,B=L(S.b).n;
   $("subA").textContent=A+" → "+B;$("subB").textContent=B+" → "+A;
   const auto=S.autoLang&&!!S.oaKey,where=S.out==="speaker"?"手机外放":"耳机里播";
-  $("subL").textContent=auto?"自动识别 "+A+" ⇄ "+B+"，"+where+"译文":freeDual()?"免费双向："+A+" ⇄ "+B+"，"+where+"译文":"听"+B+"，"+where+A;
+  $("subL").textContent=auto?"自动识别 "+A+" ⇄ "+B+"，"+where+"译文":S.autoLang&&useLocal()?"免费双向（本地模型）："+A+" ⇄ "+B+"，"+where+"译文":freeDual()?"免费双向："+A+" ⇄ "+B+"，"+where+"译文":"听"+B+"，"+where+A;
 }
 function langChange(){stopListen(true);S.a=$("langA").value;S.b=$("langB").value;store.set("a",S.a);store.set("b",S.b);syncLangs()}
 $("langA").onchange=langChange;$("langB").onchange=langChange;
@@ -451,7 +460,9 @@ function pickVoice(lang){
 const AS=navigator.audioSession;
 function setSession(t){try{if(AS&&AS.type!==t)AS.type=t}catch(e){}}
 const loud=()=>S.out==="speaker";
-const ttsBusy=()=>(!!synth&&(synth.speaking||synth.pending))||cloudOn||cloudQ.length>0;
+// 自己记录系统朗读是否在进行：iOS 的 speechSynthesis.speaking 有时会一直卡在 true
+let sysPending=0,sysGen=0,sysTouch=0;
+const ttsBusy=()=>(sysPending>0&&Date.now()-sysTouch<20000)||cloudOn||cloudQ.length>0;
 let speakSeq=0;
 function speak(it,queue){
   if(!it.out)return;
@@ -463,23 +474,26 @@ function sysSpeak(it,queue){
   if(!synth){toast("此浏览器不支持朗读");return}
   if(!it.out)return;
   const seq=++speakSeq;
-  if(!queue)synth.cancel();
+  if(!queue){synth.cancel();sysPending=0;sysGen++}
+  sysPending++;sysTouch=Date.now();
+  const gen=sysGen;let fin=false;
+  const done=()=>{if(fin)return;fin=true;if(gen===sysGen)sysPending=Math.max(0,sysPending-1);sysTouch=Date.now()};
   if(loud()&&active==="live"&&rec)pauseRec();   // 外放时先停收音，防止回声
   const recording=!!(active&&(rec||au));
   if(!recording)setSession("playback");
   // 刚停止收音时 iOS 还没把话筒释放，立刻播会走听筒或没声音，稍等一下
   const wait=queue?0:(Date.now()-micOffAt<700?700-(Date.now()-micOffAt):80);
   const go=(useVoice)=>{
-    if(seq!==speakSeq&&!queue)return;
+    if(seq!==speakSeq&&!queue){done();return}
     const u=new SpeechSynthesisUtterance(it.out);
     const lang=L(it.to).tts;u.lang=lang;const v=useVoice?pickVoice(lang):null;if(v)u.voice=v;u.rate=S.rate;u.volume=1;u.pitch=1;
     let started=false;
     u.onstart=()=>{started=true;if(speakingEl)speakingEl.classList.remove("speaking");speakingEl=it.el;it.el&&it.el.classList.add("speaking")};
-    u.onend=()=>{started=true;it.el&&it.el.classList.remove("speaking");afterSpeak()};
+    u.onend=()=>{started=true;it.el&&it.el.classList.remove("speaking");done();afterSpeak()};
     u.onerror=e=>{it.el&&it.el.classList.remove("speaking");
       if(!started&&useVoice&&e.error!=="interrupted"&&e.error!=="canceled"){go(false);return}
       if(e.error==="not-allowed")toast("请先点一下「▶ 播放」，iPhone 需要点一次才允许自动播报");
-      afterSpeak()};
+      done();afterSpeak()};
     if(!recording)setSession("playback");
     if(synth.paused)synth.resume();
     synth.speak(u);
@@ -487,7 +501,7 @@ function sysSpeak(it,queue){
     setTimeout(()=>{
       if(started||seq!==speakSeq)return;
       if(useVoice){synth.cancel();go(false)}
-      else if(!synth.speaking){unlocked=false;toast("没有播出声音：请点「▶ 播放」，并检查音量和静音键")}
+      else if(!synth.speaking){unlocked=false;toast("没有播出声音：请点「▶ 播放」，并检查音量和静音键");done();afterSpeak()}
     },1800);
   };
   setTimeout(()=>go(true),wait);
@@ -559,11 +573,16 @@ async function cloudNext(gen){
   }
 }
 function afterSpeak(){
-  setTimeout(()=>{
-    if(ttsBusy())return;
+  let tries=0;
+  const tick=()=>{
+    if(ttsBusy()&&tries++<20){setTimeout(tick,300);return}   // 最多再等 6 秒
     if(active==="live"&&!rec&&!au){setSession("auto");spawn()}
-  },300);
+  };
+  setTimeout(tick,300);
 }
+// 看门狗：同传时只要发现收音停了（又没在播报），就自动重新开始
+let lastSpawn=0;
+setInterval(()=>{if(active==="live"&&!rec&&!au&&!ttsBusy()&&Date.now()-lastSpawn>2500){setSession("auto");spawn()}},1500);
 function pauseRec(){
   clearTimeout(segTimer);
   const r=rec;rec=null;micOffAt=Date.now();
@@ -587,8 +606,9 @@ function setUI(){
 const NONLATIN=new Set(["zh-CN","zh-TW","yue","ja","ko","th","ru","ar"]);
 function freeDual(){return S.autoLang&&NONLATIN.has(S.a)!==NONLATIN.has(S.b)}
 function liveRecLang(){return freeDual()?(NONLATIN.has(S.a)?L(S.a):L(S.b)).sr:L(S.b).sr}
-function liveSide(t){
-  if(!freeDual())return "b";
+function liveSide(t){return freeDual()?sideByText(t):"b"}
+function sideByText(t){
+  if(NONLATIN.has(S.a)===NONLATIN.has(S.b))return sideFor("",t);   // 文字类型相同（如中文/日文）：按假名、谚文等区分
   const nl=(t.match(/[\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)||[]).length;
   const la=(t.match(/[A-Za-z\u00c0-\u024f]/g)||[]).length;
   const nonLatin=nl>0&&nl*2>=la;          // 汉字等每个字信息量大，权重加倍
@@ -599,7 +619,8 @@ function toggle(side){
   unlockTTS();
   if(active){stopListen();return}
   if(side==="live"&&S.oaKey&&(S.autoLang||S.mic)){startAuto("live");return}
-  const canSTT=!!S.oaKey&&!!(window.AudioContext||window.webkitAudioContext)&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  if(side==="live"&&S.autoLang&&useLocal()){startAuto("live");return}   // 免费双向：本地 Whisper
+  const canSTT=(!!S.oaKey||useLocal())&&!!(window.AudioContext||window.webkitAudioContext)&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
   if(canSTT&&(!SR||srBroken||INAPP||S.mic)){startAuto(side);return}   // 系统识别用不了，或选了指定麦克风：改用 OpenAI 识别
   if(S.mic&&!S.oaKey)toast("系统听写只能用默认麦克风；要用选中的麦克风，请在设置里填 OpenAI API Key");
   if(!SR){notice(noSRMsg());return}
@@ -608,7 +629,8 @@ function toggle(side){
   setUI();wake(true);spawn();
 }
 function spawn(){
-  const r=new SR();rec=r;done=0;sess="";
+  const r=new SR();rec=r;done=0;sess="";lastSpawn=Date.now();
+  if(active==="live")showPartial("正在听…");
   r.lang=active==="live"?liveRecLang():(active==="a"?L(S.a):L(S.b)).sr;
   r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
   r.onresult=e=>{
@@ -628,7 +650,7 @@ function spawn(){
     const m={"not-allowed":"麦克风或语音识别未获允许。iPhone 请在 设置 › 通用 › 键盘 中打开「启用听写」，并允许网站使用麦克风。","service-not-allowed":(INAPP?"当前是在 App 内置浏览器里打开的，系统语音识别用不了。请点右上角「···」选择「在 Safari 中打开」。":"系统语音识别用不了。iPhone 请确认已打开「启用听写」并用 Safari 打开；安卓 Chrome 需要能连上 Google 服务。"),"network":"语音识别需要联网（安卓 Chrome 需要能连上 Google 服务）。","language-not-supported":"这个浏览器不支持该语言的语音识别。","audio-capture":"找不到麦克风，请检查耳机连接。"}[e.error];
     if(!m)return;
     active=null;setUI();
-    if(e.error!=="audio-capture"&&S.oaKey){srBroken=true;notice("");toast("系统语音识别用不了，已改用 OpenAI 识别。请再点一次按钮");return}
+    if(e.error!=="audio-capture"&&(S.oaKey||useLocal())){srBroken=true;notice("");toast("系统语音识别用不了，已改用"+(S.oaKey?"OpenAI 识别":"免费本地模型")+"。请再点一次按钮");return}
     notice(m+(e.error!=="audio-capture"?" 也可以在设置里填 OpenAI API Key，改用 OpenAI 识别（不需要听写）。":""));
   };
   r.onend=()=>ended(r);
@@ -720,20 +742,99 @@ function stopMicTest(){
   $("micTest").textContent="测试麦克风";$("micBar").style.width="0";
 }
 function noSRMsg(){return INAPP?"当前是在 App 内置浏览器里打开的，系统语音识别用不了。请点右上角「···」选择「在 Safari 中打开」，或在设置里填 OpenAI API Key 改用 OpenAI 识别。":"这个浏览器不支持系统语音识别。iPhone 请用 Safari，安卓请用 Chrome；也可以在设置里填 OpenAI API Key 改用 OpenAI 识别。"}
+/* ---------- 免费本地识别：Whisper 模型在手机浏览器里运行（后台线程） ---------- */
+const TJS="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1";
+const WORKER_SRC=`let asr=null,ready=null,chain=Promise.resolve();
+self.onmessage=e=>{const m=e.data;
+  if(m.type==="load"){ready=(async()=>{
+      const T=await import(m.url);T.env.allowLocalModels=false;
+      try{T.env.backends.onnx.wasm.numThreads=1}catch(_){}
+      asr=await T.pipeline("automatic-speech-recognition",m.model,{device:"wasm",dtype:"q8",
+        progress_callback:p=>{if(p&&p.status==="progress")self.postMessage({type:"progress",file:p.file,loaded:p.loaded,total:p.total})}});
+      self.postMessage({type:"ready"});
+    })();
+    ready.catch(err=>self.postMessage({type:"error",message:String(err&&err.message||err)}));}
+  if(m.type==="run"){chain=chain.then(async()=>{
+    try{await ready;const out=await asr(m.audio,{task:"transcribe"});self.postMessage({type:"result",id:m.id,text:(out&&out.text)||""})}
+    catch(err){self.postMessage({type:"result",id:m.id,error:String(err&&err.message||err)})}})}
+};`;
+let lw=null,lwReady=null,lwSeq=0,localBroken=false,lwOk=false;const lwWait=new Map();
+const localCapable=()=>typeof WebAssembly==="object"&&!!window.Worker;
+const useLocal=()=>!S.oaKey&&S.localAsr!=="off"&&!localBroken&&localCapable();
+const localModel=()=>S.localAsr==="tiny"?"Xenova/whisper-tiny":"Xenova/whisper-base";
+const LOCAL_HINT="模型在手机上运行，完全免费，录音不会上传。第一次要下载几十 MB（建议连 Wi‑Fi），之后会缓存在手机里。每句识别约需 1～3 秒，新手机更快。";
+function localStatus(t){$("localStat").textContent=t||LOCAL_HINT;if(t&&active)showPartial(t)}
+function loadLocal(){
+  const model=localModel();
+  if(lw&&lw.model===model)return lwReady;
+  if(lw)lw.terminate();
+  let w;
+  try{w=new Worker(URL.createObjectURL(new Blob([WORKER_SRC],{type:"text/javascript"})),{type:"module"})}
+  catch(e){lwReady=Promise.reject(new Error("浏览器不支持"));lwReady.catch(()=>{});return lwReady}
+  w.model=model;lw=w;lwOk=false;
+  const files={};
+  lwReady=new Promise((res,rej)=>{
+    w.onmessage=e=>{const m=e.data;
+      if(m.type==="progress"){files[m.file]=[m.loaded||0,m.total||0];let a=0,b=0;for(const k in files){a+=files[k][0];b+=files[k][1]}
+        localStatus("首次使用：正在下载免费识别模型 "+(b?Math.round(a/b*100):0)+"%（之后会缓存在手机里）")}
+      else if(m.type==="ready"){lwOk=true;localStatus("✓ 免费识别模型已就绪");if(active==="live")showPartial("正在听…");res()}
+      else if(m.type==="error")rej(new Error(m.message));
+      else if(m.type==="result"){const cb=lwWait.get(m.id);lwWait.delete(m.id);if(cb)cb(m)}
+    };
+    w.onerror=e=>rej(new Error(e.message||"后台线程出错"));
+  });
+  lwReady.catch(e=>failLocal(e));
+  localStatus("正在准备免费识别模型…");
+  w.postMessage({type:"load",model,url:TJS});
+  return lwReady;
+}
+function failLocal(e){
+  if(localBroken)return;
+  localBroken=true;if(lw){lw.terminate();lw=null}
+  for(const cb of lwWait.values())cb({error:"stopped"});lwWait.clear();
+  if(au&&au.engine==="local"){active=null;stopAuto(false)}
+  localStatus("✗ 免费识别模型加载失败："+((e&&e.message)||"未知原因"));
+  notice("免费识别模型加载失败（可能是网络连不上 huggingface.co 或 cdn.jsdelivr.net）。已改用 iPhone 听写，再点一次按钮即可；改设置后会重新尝试。");
+  syncLangs();
+}
+async function localTranscribe(pcm,forced){
+  try{await loadLocal()}catch(e){return null}
+  if(!lw)return null;
+  if(au&&!au.speaking)showPartial("识别中…");
+  const id=++lwSeq;
+  const m=await new Promise(res=>{lwWait.set(id,res);lw.postMessage({type:"run",id,audio:pcm},[pcm.buffer])});
+  if(au)showPartial(au.speaking?"🎙 正在说话…":"正在听…");
+  if(m.error){if(m.error!=="stopped")toast("这一句没识别出来");return null}
+  const text=(m.text||"").trim();
+  if(!text||JUNK.test(text.replace(/[。.!！\s]+$/,"")))return null;
+  return {text,side:forced||sideByText(text)};
+}
+function to16k(chunks,rate){
+  const total=chunks.reduce((n,c)=>n+c.length,0),all=new Float32Array(total);let o=0;
+  for(const c of chunks){all.set(c,o);o+=c.length}
+  const ratio=rate/16000,n=Math.floor(total/ratio),out=new Float32Array(n);
+  for(let i=0;i<n;i++){const a=Math.floor(i*ratio),b=Math.min(total,Math.floor((i+1)*ratio));let x=0;for(let j=a;j<b;j++)x+=all[j];out[i]=Math.max(-1,Math.min(1,x/Math.max(1,b-a)))}
+  return out;
+}
+function recognize(chunks,rate,forced,engine){
+  return engine==="local"?localTranscribe(to16k(chunks,rate),forced):transcribe(encodeWav(chunks,rate),forced);
+}
 async function startAuto(mode){
   const Ctx=window.AudioContext||window.webkitAudioContext;
   if(!Ctx||!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){notice("这个浏览器不支持自动识别语言，请在设置里关掉「自动识别双方语言」。");return}
   const ctx=new Ctx();                         // 必须在点击里创建
   if(synth)synth.cancel();
   active=mode;stopping=null;setUI();wake(true);setSession("play-and-record");
-  showPartial(mode==="live"?"正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）":"🎙 正在录音，说完再点一次按钮");
+  const engine=S.oaKey?"openai":"local";
+  if(engine==="local")loadLocal();
+  showPartial(mode==="live"?(engine==="local"&&!lwOk?"正在准备免费识别模型…":"正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）"):"🎙 正在录音，说完再点一次按钮");
   let stream;
   try{stream=await openMic()}
   catch(e){try{ctx.close()}catch(_){}active=null;setUI();wake(false);showPartial("");notice(e.name==="NotAllowedError"?"没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。":"打不开麦克风（"+e.name+"），请检查麦克风是否连好。");return}
   if(active!==mode){stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
   try{await ctx.resume()}catch(e){}
   const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(4096,1,1);
-  au={mode,ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005,len:0,shown:0};
+  au={mode,engine,ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005,len:0,shown:0};
   proc.onaudioprocess=e=>onAudio(e.inputBuffer.getChannelData(0));
   src.connect(proc);proc.connect(ctx.destination);   // iOS 要连到输出才会运行；这里输出的是静音
 }
@@ -769,7 +870,7 @@ function endSeg(send){
   au.chunks=[];au.speaking=false;au.voiced=0;au.silent=0;
   const total=chunks.reduce((n,c)=>n+c.length,0);
   if(!send||total/rate<0.5){showPartial(active==="live"?"正在听…":"");return}
-  const p=transcribe(encodeWav(chunks,rate));
+  const p=recognize(chunks,rate,null,au.engine);
   sttChain=sttChain.then(()=>p).then(r=>{if(r)translate(r.text,r.side)}).catch(()=>{});   // 按说话顺序出结果
 }
 function encodeWav(chunks,rate){
@@ -824,12 +925,12 @@ function stopAuto(flush){
   const a=au;if(!a)return;
   if(flush&&a.mode==="live"&&a.speaking)endSeg(true);
   let talk=null;
-  if(flush&&a.mode!=="live"&&a.len>=500)talk=encodeWav(a.chunks,a.ctx.sampleRate);
+  if(flush&&a.mode!=="live"&&a.len>=500)talk=recognize(a.chunks,a.ctx.sampleRate,a.mode,a.engine);
   au=null;
   try{a.proc.onaudioprocess=null;a.proc.disconnect();a.src.disconnect()}catch(e){}
   a.stream.getTracks().forEach(t=>t.stop());try{a.ctx.close()}catch(e){}
   micOffAt=Date.now();setSession("playback");showPartial(talk?"识别中…":"");setUI();wake(false);
-  if(talk){const p=transcribe(talk,a.mode);sttChain=sttChain.then(()=>p).then(r=>{showPartial("");if(r)translate(r.text,r.side)}).catch(()=>{})}
+  if(talk){const p=talk;sttChain=sttChain.then(()=>p).then(r=>{showPartial("");if(r)translate(r.text,r.side)}).catch(()=>{})}
 }
 function stopListen(silent){
   if(!active)return;
@@ -888,7 +989,7 @@ function syncSettings(){
   $("engine").value=S.engine;$("engineHint").textContent=hints[S.engine];
   $("mmBox").hidden=S.engine!=="mymemory";$("llmBox").hidden=S.engine!=="llm";$("oaBox").hidden=S.engine!=="chatgpt";
   $("mmEmail").value=S.mmEmail;$("llmBase").value=S.llmBase;$("llmKey").value=S.llmKey;$("llmModel").value=S.llmModel;$("oaKey").value=S.oaKey;$("oaModel").value=S.oaModel;
-  $("out").value=S.out;$("autoLang").checked=S.autoLang;$("rawMic").checked=S.rawMic;$("sttModel").value=S.sttModel;$("sttBox").hidden=!S.autoLang;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
+  $("out").value=S.out;$("autoLang").checked=S.autoLang;$("localAsr").value=S.localAsr;if(!$("localStat").textContent)localStatus("");$("rawMic").checked=S.rawMic;$("sttModel").value=S.sttModel;$("sttBox").hidden=!S.autoLang;$("voiceEng").value=S.voice;$("ttsVoice").value=S.ttsVoice;$("ttsModel").value=S.ttsModel;$("oaKey2").value=S.oaKey;$("ttsBox").hidden=S.voice!=="openai";$("auto").checked=S.auto;$("bigMine").checked=S.bigMine;$("liveSpeak").checked=S.liveSpeak;
   $("rate").value=S.rate;$("rateV").textContent=(+S.rate).toFixed(1)+"×";
   $("sil").value=S.sil;$("silV").textContent=(+S.sil).toFixed(1);
 }
@@ -903,7 +1004,9 @@ $("oaTest").onclick=async()=>{
 };
 bindVal("rate","rate",true);bindVal("sil","sil",true);
 bindVal("out","out");
-bindChk("autoLang","autoLang");bindChk("rawMic","rawMic");
+bindChk("autoLang","autoLang");bindVal("localAsr","localAsr");
+$("localAsr").addEventListener("change",()=>{localBroken=false;if(lw&&lw.model!==localModel()){lw.terminate();lw=null;lwOk=false}localStatus("");syncLangs()});
+$("localPre").onclick=()=>{if(S.localAsr==="off"){toast("请先选一个免费识别模型");return}localBroken=false;loadLocal()};bindChk("rawMic","rawMic");
 $("micSel").onchange=e=>{S.mic=e.target.value;store.set("mic",S.mic);stopMicTest()};
 $("rawMic").addEventListener("change",stopMicTest);
 $("micTest").onclick=testMic;
