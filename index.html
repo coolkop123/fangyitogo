@@ -161,7 +161,7 @@ h1{font-size:22px;font-weight:800;margin:0;letter-spacing:.02em;flex:none}
 
 <div class="sheet" id="sheet" hidden>
   <div class="card" role="dialog" aria-label="设置">
-    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.7</small></h2><button class="done" id="closeSet">完成</button></div>
+    <div class="head"><h2>设置 <small style="font-size:12px;color:var(--mute);font-weight:500">v3.8</small></h2><button class="done" id="closeSet">完成</button></div>
 
     <h3>翻译引擎</h3>
     <label class="f">引擎
@@ -576,13 +576,13 @@ function afterSpeak(){
   let tries=0;
   const tick=()=>{
     if(ttsBusy()&&tries++<20){setTimeout(tick,300);return}   // 最多再等 6 秒
-    if(active==="live"&&!rec&&!au){setSession("auto");spawn()}
+    if(active==="live"&&!liveAuto&&!rec&&!au){setSession("auto");spawn()}
   };
   setTimeout(tick,300);
 }
 // 看门狗：同传时只要发现收音停了（又没在播报），就自动重新开始
 let lastSpawn=0;
-setInterval(()=>{if(active==="live"&&!rec&&!au&&!ttsBusy()&&Date.now()-lastSpawn>2500){setSession("auto");spawn()}},1500);
+setInterval(()=>{if(active==="live"&&!liveAuto&&!rec&&!au&&!ttsBusy()&&Date.now()-lastSpawn>2500){setSession("auto");spawn()}},1500);
 function pauseRec(){
   clearTimeout(segTimer);
   const r=rec;rec=null;micOffAt=Date.now();
@@ -629,6 +629,7 @@ function toggle(side){
   setUI();wake(true);spawn();
 }
 function spawn(){
+  if(liveAuto||au)return;
   const r=new SR();rec=r;done=0;sess="";lastSpawn=Date.now();
   if(active==="live")showPartial("正在听…");
   r.lang=active==="live"?liveRecLang():(active==="a"?L(S.a):L(S.b)).sr;
@@ -676,7 +677,7 @@ function finishStop(){
 function restartSoon(){
   const now=Date.now();restarts=restarts.filter(t=>now-t<10000);restarts.push(now);
   if(restarts.length>12){notice("语音识别反复中断，已停止。请检查网络或麦克风后再试。");active=null;finishStop();return}
-  setTimeout(()=>{if(active&&!rec&&!(loud()&&ttsBusy()))spawn()},150);
+  setTimeout(()=>{if(active&&!liveAuto&&!rec&&!(loud()&&ttsBusy()))spawn()},150);
 }
 function armSeg(){ // 同传：停顿超过阈值就断句
   clearTimeout(segTimer);
@@ -688,7 +689,7 @@ function armSeg(){ // 同传：停顿超过阈值就断句
   },S.sil*1000);
 }
 /* ---------- 同传：自动识别语言（录音 → OpenAI 转写 → 判断方向） ---------- */
-let au=null,sttChain=Promise.resolve();
+let au=null,sttChain=Promise.resolve(),liveAuto=false;   // liveAuto：同传正在用录音识别（OpenAI 或本地模型），不能再启动系统听写
 /* ---------- 麦克风选择 ---------- */
 function micConstraints(){
   const raw=!!S.rawMic,c={echoCancellation:!raw,noiseSuppression:!raw,autoGainControl:!raw,channelCount:1};
@@ -824,14 +825,16 @@ async function startAuto(mode){
   if(!Ctx||!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){notice("这个浏览器不支持自动识别语言，请在设置里关掉「自动识别双方语言」。");return}
   const ctx=new Ctx();                         // 必须在点击里创建
   if(synth)synth.cancel();
+  if(rec){const r=rec;rec=null;try{r.abort()}catch(e){}}
+  liveAuto=mode==="live";notice("");
   active=mode;stopping=null;setUI();wake(true);setSession("play-and-record");
   const engine=S.oaKey?"openai":"local";
   if(engine==="local")loadLocal();
   showPartial(mode==="live"?(engine==="local"&&!lwOk?"正在准备免费识别模型…":"正在听…（自动识别 "+L(S.a).n+" / "+L(S.b).n+"）"):"🎙 正在录音，说完再点一次按钮");
   let stream;
   try{stream=await openMic()}
-  catch(e){try{ctx.close()}catch(_){}active=null;setUI();wake(false);showPartial("");notice(e.name==="NotAllowedError"?"没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。":"打不开麦克风（"+e.name+"），请检查麦克风是否连好。");return}
-  if(active!==mode){stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
+  catch(e){try{ctx.close()}catch(_){}liveAuto=false;active=null;setUI();wake(false);showPartial("");notice(e.name==="NotAllowedError"?"没有拿到麦克风权限：请在浏览器设置里允许本网站使用麦克风。":"打不开麦克风（"+e.name+"），请检查麦克风是否连好。");return}
+  if(active!==mode){liveAuto=false;stream.getTracks().forEach(t=>t.stop());try{ctx.close()}catch(_){}return}
   try{await ctx.resume()}catch(e){}
   const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(4096,1,1);
   au={mode,engine,ctx,stream,src,proc,chunks:[],pre:[],speaking:false,silent:0,voiced:0,floor:0.005,len:0,shown:0};
@@ -922,6 +925,7 @@ function sideFor(code,text){
   return c===a&&c!==b?"a":"b";
 }
 function stopAuto(flush){
+  liveAuto=false;
   const a=au;if(!a)return;
   if(flush&&a.mode==="live"&&a.speaking)endSeg(true);
   let talk=null;
@@ -935,6 +939,7 @@ function stopAuto(flush){
 function stopListen(silent){
   if(!active)return;
   if(au){active=null;stopAuto(!silent);return}
+  if(liveAuto){liveAuto=false;active=null;setUI();showPartial("");wake(false);return}
   stopping=silent?null:active;active=null;setUI();
   if(silent){talkBuf="";sess=""}
   const r=rec;
