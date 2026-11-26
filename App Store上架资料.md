@@ -6,7 +6,7 @@
 
 | 栏目 | 填写内容 |
 |---|---|
-| 名称（≤30 字） | 酷天同声 |
+| 名称（≤30 字） | 酷天同声（英文名：Cool Interpreter） |
 | 副标题（≤30 字） | 耳机实时翻译 · 离线免费 |
 | 类别 | 主要：工具；次要：旅游 |
 | 隐私政策网址 | https://fangyitogo-app.pages.dev/privacy.html |
@@ -85,3 +85,37 @@ This app requires no login. Tap "同传收听" (Live), then "开始同传" (Star
 - [ ] 隐私政策、技术支持网址能打开
 - [ ] 截图已上传
 - [ ] 在版本页面选择要提交的构建版本，点「提交以供审核」
+
+## 英文版商店文案（App Store Connect 里添加「英文」语言后填写）
+
+| 栏目 | 填写内容 |
+|---|---|
+| Name | Cool Interpreter |
+| Subtitle | Live earbud translation, offline |
+| Keywords | translate,translator,interpreter,live translation,voice translator,offline,earbuds,chinese,english,travel |
+
+**Promotional Text**
+
+Put on your Bluetooth earbuds and just talk. Cool Interpreter tells who is speaking Chinese or English, translates instantly and reads it in your ear. Free, offline and private.
+
+**Description**
+
+Cool Interpreter turns your iPhone and Bluetooth earbuds into a live interpreter.
+
+LIVE MODE
+Speak Chinese or English freely, with no buttons to switch. The app listens in both languages at once, works out who is speaking, translates into the other language and reads it aloud. Live captions show on screen and can go full screen for meetings, travel and face-to-face talks.
+
+FACE-TO-FACE MODE
+Tap your side to talk. Your translation can play on the phone speaker for the other person, while theirs plays only in your earbuds. Show large text, flipped for the person across the table.
+
+OFFLINE, FREE AND PRIVATE
+• Speech recognition and translation use Apple's built-in on-device features once language packs are downloaded
+• No account, no ads, no data collected
+• Recordings are never stored or sent to the developer
+
+MORE
+• Works with any Bluetooth earbuds and their microphone
+• One tap to switch to the phone speaker
+• Chinese, English, Japanese, Korean, French, German, Spanish and more
+• Adjustable speech rate and pause length
+• Keeps listening in the background
