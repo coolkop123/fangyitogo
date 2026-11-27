@@ -79,8 +79,8 @@ struct SettingsView: View {
                     Section("关于") {
                         LabeledContent("版本", value: version)
                         Link(destination: URL(string: "https://coolnews.ca")!) { Label("酷天新闻网站", systemImage: "newspaper") }
-                        Link(destination: URL(string: "https://fangyitogo-app.pages.dev/support.html")!) { Label("技术支持", systemImage: "questionmark.circle") }
-                        Link(destination: URL(string: "https://fangyitogo-app.pages.dev/privacy.html")!) { Label("隐私政策", systemImage: "hand.raised") }
+                        Link(destination: URL(string: "https://coolinterpreter.com/support.html")!) { Label("技术支持", systemImage: "questionmark.circle") }
+                        Link(destination: URL(string: "https://coolinterpreter.com/privacy.html")!) { Label("隐私政策", systemImage: "hand.raised") }
                     }
                 }
                 Section("耳机使用说明") {

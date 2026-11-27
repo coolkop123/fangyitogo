@@ -9,9 +9,9 @@
 | 名称（≤30 字） | 酷天同声（英文名：Cool Interpreter） |
 | 副标题（≤30 字） | 耳机实时翻译 · 离线免费 |
 | 类别 | 主要：工具；次要：旅游 |
-| 隐私政策网址 | https://fangyitogo-app.pages.dev/privacy.html |
-| 技术支持网址 | https://fangyitogo-app.pages.dev/support.html |
-| 营销网址（可选） | https://fangyitogo-app.pages.dev |
+| 隐私政策网址 | https://coolinterpreter.com/privacy.html |
+| 技术支持网址 | https://coolinterpreter.com/support.html |
+| 营销网址（可选） | https://coolinterpreter.com |
 | 版权 | 2026 coolkop123（可改成你的名字或公司名） |
 | 价格 | 免费 |
 
