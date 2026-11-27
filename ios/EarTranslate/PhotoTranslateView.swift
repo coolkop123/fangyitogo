@@ -18,6 +18,7 @@ struct PhotoTranslateView: View {
     @State private var lines: [PhotoLine] = []
     @State private var status = ""
     @State private var showCamera = false
+    @State private var showActions = false
     @State private var toMine = true                     // 翻译成我的语言（否则翻译成对方语言）
     @State private var config: TranslationSession.Configuration?
 
@@ -26,19 +27,9 @@ struct PhotoTranslateView: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHeader(title: "图片翻译") {
-                Menu {
-                    Button("复制全部译文", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = lines.map { $0.translation ?? $0.text }.joined(separator: "\n")
-                    }
-                    Button("复制原文和译文", systemImage: "doc.on.doc.fill") {
-                        UIPasteboard.general.string = lines.map { "\($0.text)\n→ \($0.translation ?? "")" }.joined(separator: "\n\n")
-                    }
-                    Button("清空记录", systemImage: "trash", role: .destructive) {
-                        lines = []; image = nil; status = ""; pickerItem = nil
-                    }
-                } label: { CircleIcon(system: "ellipsis") }
-                .disabled(lines.isEmpty && image == nil)
-                .accessibilityLabel("更多")
+                Button { showActions = true } label: { CircleIcon(system: "ellipsis") }
+                    .disabled(lines.isEmpty && image == nil)
+                    .accessibilityLabel("更多")
             }
 
             HStack(spacing: 10) {
@@ -98,6 +89,20 @@ struct PhotoTranslateView: View {
         }
         .background(Theme.bg.ignoresSafeArea())
         .foregroundStyle(Theme.ink)
+        .confirmationDialog("图片翻译", isPresented: $showActions, titleVisibility: .hidden) {
+            Button("复制全部译文") {
+                UIPasteboard.general.string = lines.map { $0.translation ?? $0.text }.joined(separator: "\n")
+                status = "已复制全部译文"
+            }
+            Button("复制原文和译文") {
+                UIPasteboard.general.string = lines.map { "\($0.text)\n→ \($0.translation ?? "")" }.joined(separator: "\n\n")
+                status = "已复制原文和译文"
+            }
+            Button("清空记录", role: .destructive) {
+                lines = []; image = nil; status = ""; pickerItem = nil
+            }
+            Button("取消", role: .cancel) {}
+        }
         .onChange(of: pickerItem) {
             guard let item = pickerItem else { return }
             Task {
